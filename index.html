@@ -1,0 +1,1987 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AJIO • MYNTRA • FLIPKART — Sale & Purchase Processor</title>
+    <meta name="description" content="Process, merge, deduplicate and save Sale & Purchase data from AJIO, Myntra, and Flipkart directly to Google Sheets">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- SheetJS Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <style>
+        /* ═══════════════════════════════════════════════════════════════════════
+           AJIO • MYNTRA • FLIPKART — Premium Dark Theme
+           ═══════════════════════════════════════════════════════════════════════ */
+        *, *::before, *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #0a0a1a;
+            --bg-secondary: #111128;
+            --bg-card: rgba(20, 20, 50, 0.6);
+            --bg-glass: rgba(255, 255, 255, 0.03);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            
+            --text-primary: #e8e8f0;
+            --text-secondary: #9393b0;
+            --text-muted: #5a5a78;
+            
+            --accent-sale: #22c55e;
+            --accent-sale-dim: rgba(34, 197, 94, 0.12);
+            --accent-sale-glow: rgba(34, 197, 94, 0.25);
+            
+            --accent-purchase: #3b82f6;
+            --accent-purchase-dim: rgba(59, 130, 246, 0.12);
+            --accent-purchase-glow: rgba(59, 130, 246, 0.25);
+            
+            --accent-primary: #6366f1;
+            --accent-primary-dim: rgba(99, 102, 241, 0.15);
+            
+            --accent-export: #f59e0b;
+            --accent-export-dim: rgba(245, 158, 11, 0.15);
+            
+            --accent-danger: #ef4444;
+            --accent-danger-dim: rgba(239, 68, 68, 0.15);
+            
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 16px;
+            
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+            --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.4);
+            --shadow-lg: 0 8px 40px rgba(0, 0, 0, 0.5);
+            
+            --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            --transition-fast: all 0.15s ease;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+            line-height: 1.6;
+        }
+
+        /* Background Animation Orbs */
+        .bg-animation {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+            pointer-events: none;
+            overflow: hidden;
+        }
+        .bg-orb {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(120px);
+            opacity: 0.12;
+            animation: orbFloat 25s infinite ease-in-out;
+        }
+        .bg-orb-1 {
+            width: 600px;
+            height: 600px;
+            background: var(--accent-sale);
+            top: -200px;
+            left: -100px;
+            animation-delay: 0s;
+        }
+        .bg-orb-2 {
+            width: 500px;
+            height: 500px;
+            background: var(--accent-purchase);
+            top: 50%;
+            right: -150px;
+            animation-delay: -7s;
+        }
+        .bg-orb-3 {
+            width: 450px;
+            height: 450px;
+            background: var(--accent-primary);
+            bottom: -100px;
+            left: 30%;
+            animation-delay: -14s;
+        }
+        @keyframes orbFloat {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            25% { transform: translate(70px, -50px) scale(1.1); }
+            50% { transform: translate(-40px, 70px) scale(0.95); }
+            75% { transform: translate(50px, 40px) scale(1.05); }
+        }
+
+        /* App Layout Header */
+        .app-header {
+            position: relative;
+            z-index: 10;
+            padding: 20px 40px;
+            background: rgba(10, 10, 26, 0.85);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border-glass);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .logo-icon svg {
+            width: 40px;
+            height: 40px;
+        }
+        .logo-text h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, #e8e8f0, #9393b0);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .logo-text p {
+            font-size: 0.72rem;
+            font-weight: 500;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        /* Mode Selector Tabs (Top Navigation) */
+        .mode-selector {
+            display: flex;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-md);
+            padding: 4px;
+        }
+        .mode-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            padding: 8px 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            border-radius: var(--radius-sm);
+            transition: var(--transition-fast);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .mode-btn.active {
+            background: var(--bg-glass);
+            color: var(--text-primary);
+            box-shadow: var(--shadow-sm);
+        }
+
+        /* Main Container */
+        .main-content {
+            position: relative;
+            z-index: 10;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 30px 24px;
+        }
+        .app-view {
+            display: none;
+        }
+        .app-view.active {
+            display: block;
+        }
+
+        .section {
+            margin-bottom: 40px;
+        }
+        .section-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        .step-badge {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent-primary), #818cf8);
+            color: white;
+            font-weight: 700;
+            font-size: 0.9rem;
+            flex-shrink: 0;
+        }
+        .section-header h2 {
+            font-size: 1.35rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+        .section-desc {
+            width: 100%;
+            padding-left: 48px;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-top: -6px;
+        }
+
+        /* File Upload Grid */
+        .upload-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 20px;
+            margin-bottom: 28px;
+        }
+        .upload-card {
+            position: relative;
+            background: var(--bg-card);
+            border: 2px dashed var(--border-glass);
+            border-radius: var(--radius-lg);
+            padding: 30px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: var(--transition);
+            backdrop-filter: blur(10px);
+        }
+        .upload-card:hover {
+            border-color: rgba(255, 255, 255, 0.2);
+            transform: translateY(-3px);
+            box-shadow: var(--shadow-md);
+        }
+        .upload-card.sale-card:hover {
+            border-color: var(--accent-sale);
+            box-shadow: 0 4px 20px var(--accent-sale-dim);
+        }
+        .upload-card.purchase-card:hover {
+            border-color: var(--accent-purchase);
+            box-shadow: 0 4px 20px var(--accent-purchase-dim);
+        }
+        .upload-card.file-added {
+            border-style: solid;
+        }
+        .upload-card.file-added.sale-card {
+            border-color: var(--accent-sale);
+            background: var(--accent-sale-dim);
+        }
+        .upload-card.file-added.purchase-card {
+            border-color: var(--accent-purchase);
+            background: var(--accent-purchase-dim);
+        }
+        .card-icon {
+            width: 44px;
+            height: 44px;
+            margin: 0 auto 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: var(--radius-md);
+        }
+        .sale-icon {
+            background: var(--accent-sale-dim);
+            color: var(--accent-sale);
+        }
+        .purchase-icon {
+            background: var(--accent-purchase-dim);
+            color: var(--accent-purchase);
+        }
+        .card-icon svg {
+            width: 24px;
+            height: 24px;
+        }
+        .upload-card h3 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        .file-status {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            margin-bottom: 14px;
+        }
+        .file-input {
+            display: none;
+        }
+        .file-label {
+            display: inline-block;
+            padding: 8px 18px;
+            border-radius: var(--radius-sm);
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+            color: var(--text-secondary);
+            font-size: 0.78rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: var(--transition-fast);
+        }
+        .file-label:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-primary);
+        }
+        .file-name {
+            margin-top: 10px;
+            font-size: 0.72rem;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--accent-sale);
+            word-break: break-all;
+            min-height: 16px;
+        }
+        .upload-card.purchase-card .file-name {
+            color: var(--accent-purchase);
+        }
+        .upload-card.drag-over {
+            border-color: var(--accent-primary) !important;
+            background: var(--accent-primary-dim) !important;
+            transform: scale(1.01);
+        }
+
+        /* Buttons & Actions */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            border: none;
+            border-radius: var(--radius-md);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+        .btn:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+            transform: none !important;
+            box-shadow: none !important;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-primary), #818cf8);
+            color: white;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.25);
+            margin: 0 auto;
+            display: flex;
+        }
+        .btn-primary:not(:disabled):hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(99, 102, 241, 0.4);
+        }
+        .btn-secondary {
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+            color: var(--text-secondary);
+        }
+        .btn-secondary:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-primary);
+        }
+        .btn-success {
+            background: linear-gradient(135deg, var(--accent-sale), #4ade80);
+            color: #052e16;
+            box-shadow: 0 4px 15px rgba(34, 197, 94, 0.2);
+        }
+        .btn-success:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(34, 197, 94, 0.35);
+        }
+        .btn-export {
+            background: linear-gradient(135deg, var(--accent-export), #fbbf24);
+            color: #451a03;
+            box-shadow: 0 4px 15px var(--accent-export-dim);
+        }
+        .btn-export:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(245, 158, 11, 0.3);
+        }
+        .btn-danger {
+            background: linear-gradient(135deg, var(--accent-danger), #f87171);
+            color: white;
+            box-shadow: 0 4px 15px rgba(239, 68, 68, 0.2);
+        }
+        .btn-danger:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(239, 68, 68, 0.35);
+        }
+
+        /* Stats Cards */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 16px 20px;
+            background: var(--bg-card);
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border-glass);
+            backdrop-filter: blur(10px);
+            transition: var(--transition);
+        }
+        .stat-card:hover {
+            transform: translateY(-2px);
+        }
+        .stat-icon {
+            font-size: 1.8rem;
+        }
+        .stat-info {
+            display: flex;
+            flex-direction: column;
+        }
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .sale-stat .stat-value { color: var(--accent-sale); }
+        .purchase-stat .stat-value { color: var(--accent-purchase); }
+        .total-stat .stat-value { color: var(--accent-primary); }
+        .stat-label {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        /* Tabs inside results section */
+        .tab-nav {
+            display: flex;
+            gap: 4px;
+            background: var(--bg-card);
+            border-radius: var(--radius-md);
+            padding: 4px;
+            margin-bottom: 16px;
+            border: 1px solid var(--border-glass);
+            width: fit-content;
+        }
+        .tab-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 18px;
+            border: none;
+            border-radius: var(--radius-sm);
+            background: transparent;
+            color: var(--text-muted);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.8rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: var(--transition-fast);
+        }
+        .tab-btn:hover {
+            color: var(--text-secondary);
+        }
+        .tab-btn.active {
+            background: var(--bg-glass);
+            color: var(--text-primary);
+            box-shadow: var(--shadow-sm);
+        }
+        .tab-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+        .sale-dot { background: var(--accent-sale); }
+        .purchase-dot { background: var(--accent-purchase); }
+
+        /* Tables & Viewer Container */
+        .table-container {
+            background: var(--bg-card);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border-glass);
+            overflow: hidden;
+            backdrop-filter: blur(10px);
+        }
+        .table-scroll {
+            overflow-x: auto;
+            overflow-y: auto;
+            max-height: 480px;
+        }
+        .table-scroll::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        .table-scroll::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+        .table-scroll::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 3px;
+        }
+        .table-scroll::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.76rem;
+            white-space: nowrap;
+        }
+        thead {
+            position: sticky;
+            top: 0;
+            z-index: 5;
+        }
+        th {
+            padding: 10px 12px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 2px solid var(--border-glass);
+        }
+        th.sale-th {
+            background: rgba(34, 197, 94, 0.08);
+            color: var(--accent-sale);
+            border-bottom-color: var(--accent-sale-glow);
+        }
+        th.purchase-th {
+            background: rgba(59, 130, 246, 0.08);
+            color: var(--accent-purchase);
+            border-bottom-color: var(--accent-purchase-glow);
+        }
+        td {
+            padding: 8px 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+            color: var(--text-secondary);
+            max-width: 180px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        tbody tr {
+            transition: var(--transition-fast);
+        }
+        tbody tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        tbody tr:hover td {
+            color: var(--text-primary);
+        }
+        .table-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 16px;
+            border-top: 1px solid var(--border-glass);
+            font-size: 0.78rem;
+            color: var(--text-muted);
+        }
+
+        /* Action bar below preview */
+        .action-bar {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            margin-top: 24px;
+            flex-wrap: wrap;
+        }
+
+        /* Sheets Viewer Settings Controls */
+        .viewer-controls {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            background: var(--bg-card);
+            border: 1px solid var(--border-glass);
+            padding: 16px 24px;
+            border-radius: var(--radius-lg);
+            margin-bottom: 24px;
+            backdrop-filter: blur(10px);
+            flex-wrap: wrap;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .control-group label {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+        }
+        select, input[type="text"] {
+            background: rgba(10, 10, 26, 0.6);
+            border: 1px solid var(--border-glass);
+            color: var(--text-primary);
+            padding: 8px 16px;
+            border-radius: var(--radius-sm);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.85rem;
+            outline: none;
+            transition: var(--transition-fast);
+            min-width: 220px;
+        }
+        select:focus, input[type="text"]:focus {
+            border-color: var(--accent-primary);
+        }
+        .pagination-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-left: auto;
+        }
+
+        /* Loader & Processing Spinner Overlay */
+        .loader-section {
+            position: fixed;
+            inset: 0;
+            background: rgba(10, 10, 26, 0.9);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(10px);
+        }
+        .loader-container {
+            text-align: center;
+            padding: 40px;
+        }
+        .loader-spinner {
+            position: relative;
+            width: 70px;
+            height: 70px;
+            margin: 0 auto 20px;
+        }
+        .spinner-ring {
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            border: 3px solid transparent;
+            animation: spin 1.5s linear infinite;
+        }
+        .spinner-ring:nth-child(1) {
+            border-top-color: var(--accent-sale);
+            animation-duration: 1.1s;
+        }
+        .spinner-ring:nth-child(2) {
+            inset: 6px;
+            border-right-color: var(--accent-purchase);
+            animation-duration: 1.6s;
+            animation-direction: reverse;
+        }
+        .spinner-ring:nth-child(3) {
+            inset: 12px;
+            border-bottom-color: var(--accent-primary);
+            animation-duration: 2.1s;
+        }
+        @keyframes spin {
+            100% { transform: rotate(360deg); }
+        }
+        .loader-container h3 {
+            font-size: 1.1rem;
+            margin-bottom: 6px;
+        }
+        .loader-container p {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            margin-bottom: 16px;
+        }
+        .progress-bar {
+            width: 260px;
+            height: 4px;
+            background: var(--bg-glass);
+            border-radius: 4px;
+            margin: 0 auto;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--accent-sale), var(--accent-purchase), var(--accent-primary));
+            border-radius: 4px;
+            transition: width 0.4s ease;
+        }
+
+        /* Toast Popup Alerts */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-md);
+            backdrop-filter: blur(20px);
+            box-shadow: var(--shadow-lg);
+            z-index: 1010;
+            animation: toastSlide 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            font-size: 0.82rem;
+        }
+        .toast.error {
+            border-color: var(--accent-danger);
+            background: var(--accent-danger-dim);
+        }
+        @keyframes toastSlide {
+            from { transform: translateX(120%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .hidden {
+            display: none !important;
+        }
+
+        /* Confirmation Dialog Modal */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(10, 10, 26, 0.8);
+            z-index: 1005;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(8px);
+        }
+        .modal-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-lg);
+            padding: 24px 30px;
+            width: 400px;
+            max-width: 90%;
+            box-shadow: var(--shadow-lg);
+            text-align: center;
+        }
+        .modal-card h3 {
+            font-size: 1.15rem;
+            margin-bottom: 10px;
+            color: var(--accent-danger);
+        }
+        .modal-card p {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 20px;
+        }
+        .modal-actions {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+        }
+
+        /* Responsive Layout styles */
+        @media (max-width: 768px) {
+            .app-header { padding: 14px 20px; }
+            .main-content { padding: 20px 16px; }
+            .upload-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+            .upload-card { padding: 20px 12px; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .viewer-controls { flex-direction: column; align-items: stretch; gap: 12px; }
+            .pagination-container { margin-left: 0; justify-content: space-between; }
+        }
+        @media (max-width: 480px) {
+            .upload-grid { grid-template-columns: 1fr; }
+            .stats-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Background Orbs -->
+    <div class="bg-animation">
+        <div class="bg-orb bg-orb-1"></div>
+        <div class="bg-orb bg-orb-2"></div>
+        <div class="bg-orb bg-orb-3"></div>
+    </div>
+
+    <!-- Header navigation -->
+    <header class="app-header">
+        <div class="logo">
+            <div class="logo-icon">
+                <svg viewBox="0 0 40 40" fill="none">
+                    <rect x="2" y="2" width="36" height="36" rx="8" stroke="url(#grad)" stroke-width="3"/>
+                    <path d="M12 28V16l8-6 8 6v12" stroke="url(#grad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M16 28v-6h8v6" stroke="url(#grad)" stroke-width="2" stroke-linecap="round"/>
+                    <defs>
+                        <linearGradient id="grad" x1="0" y1="0" x2="40" y2="40">
+                            <stop stop-color="#6366f1"/>
+                            <stop offset="1" stop-color="#06b6d4"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+            </div>
+            <div class="logo-text">
+                <h1>Sale & Purchase Processor</h1>
+                <p>AJIO • MYNTRA • FLIPKART</p>
+            </div>
+        </div>
+
+        <div class="mode-selector">
+            <button class="mode-btn active" id="mode-upload" onclick="switchView('upload')">
+                📂 Processing & Sync
+            </button>
+            <button class="mode-btn" id="mode-view" onclick="switchView('view')">
+                📊 Google Sheet Viewer
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Views -->
+    <main class="main-content">
+
+        <!-- VIEW 1: FILE PROCESSING & SYNC -->
+        <div id="view-upload-container" class="app-view active">
+            
+            <!-- Step 1: Upload Section -->
+            <section class="section">
+                <div class="section-header">
+                    <span class="step-badge">1</span>
+                    <h2>Upload Source Files</h2>
+                    <p class="section-desc">Upload 4 files: SALE DETAILS, SALE SUMMARY, PURCHASE DETAILS, PURCHASE SUMMARY</p>
+                </div>
+
+                <div class="upload-grid">
+                    <!-- Sale Details Card -->
+                    <div class="upload-card sale-card" id="card-sale-details" onclick="triggerInput('sale-details')">
+                        <div class="card-icon sale-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                                <polyline points="14,2 14,8 20,8"/>
+                                <line x1="16" y1="13" x2="8" y2="13"/>
+                                <line x1="16" y1="17" x2="8" y2="17"/>
+                            </svg>
+                        </div>
+                        <h3>Sale Details</h3>
+                        <p class="file-status">Drag & Drop .xls/.xlsx file</p>
+                        <input type="file" accept=".xls,.xlsx" class="file-input" id="input-sale-details" onchange="handleFileSelect('sale_details', this)">
+                        <label class="file-label">Choose File</label>
+                        <div class="file-name" id="name-sale-details"></div>
+                    </div>
+
+                    <!-- Sale Summary Card -->
+                    <div class="upload-card sale-card" id="card-sale-summary" onclick="triggerInput('sale-summary')">
+                        <div class="card-icon sale-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                                <polyline points="14,2 14,8 20,8"/>
+                                <path d="M8 13h2v4H8z"/>
+                                <path d="M14 11h2v6h-2z"/>
+                            </svg>
+                        </div>
+                        <h3>Sale Summary</h3>
+                        <p class="file-status">Drag & Drop .xls/.xlsx file</p>
+                        <input type="file" accept=".xls,.xlsx" class="file-input" id="input-sale-summary" onchange="handleFileSelect('sale_summary', this)">
+                        <label class="file-label">Choose File</label>
+                        <div class="file-name" id="name-sale-summary"></div>
+                    </div>
+
+                    <!-- Purchase Details Card -->
+                    <div class="upload-card purchase-card" id="card-purchase-details" onclick="triggerInput('purchase-details')">
+                        <div class="card-icon purchase-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                                <polyline points="14,2 14,8 20,8"/>
+                                <line x1="16" y1="13" x2="8" y2="13"/>
+                                <line x1="16" y1="17" x2="8" y2="17"/>
+                            </svg>
+                        </div>
+                        <h3>Purchase Details</h3>
+                        <p class="file-status">Drag & Drop .xls/.xlsx file</p>
+                        <input type="file" accept=".xls,.xlsx" class="file-input" id="input-purchase-details" onchange="handleFileSelect('purchase_details', this)">
+                        <label class="file-label">Choose File</label>
+                        <div class="file-name" id="name-purchase-details"></div>
+                    </div>
+
+                    <!-- Purchase Summary Card -->
+                    <div class="upload-card purchase-card" id="card-purchase-summary" onclick="triggerInput('purchase-summary')">
+                        <div class="card-icon purchase-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                                <polyline points="14,2 14,8 20,8"/>
+                                <path d="M8 13h2v4H8z"/>
+                                <path d="M14 11h2v6h-2z"/>
+                            </svg>
+                        </div>
+                        <h3>Purchase Summary</h3>
+                        <p class="file-status">Drag & Drop .xls/.xlsx file</p>
+                        <input type="file" accept=".xls,.xlsx" class="file-input" id="input-purchase-summary" onchange="handleFileSelect('purchase_summary', this)">
+                        <label class="file-label">Choose File</label>
+                        <div class="file-name" id="name-purchase-summary"></div>
+                    </div>
+                </div>
+
+                <button id="process-btn" class="btn btn-primary" onclick="startFileProcessing()" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        <path d="M9 12l2 2 4-4"/>
+                    </svg>
+                    <span>Process & Sync Data</span>
+                </button>
+            </section>
+
+            <!-- Step 2: Result Preview and Google sheet action -->
+            <section id="result-section" class="section hidden">
+                <div class="section-header">
+                    <span class="step-badge">2</span>
+                    <h2>Preview Merged Results</h2>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card sale-stat">
+                        <div class="stat-icon">📊</div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="sale-count">0</span>
+                            <span class="stat-label">New Sale Rows</span>
+                        </div>
+                    </div>
+                    <div class="stat-card purchase-stat">
+                        <div class="stat-icon">🛒</div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="purchase-count">0</span>
+                            <span class="stat-label">New Purchase Rows</span>
+                        </div>
+                    </div>
+                    <div class="stat-card total-stat">
+                        <div class="stat-icon">⚡</div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="total-count">0</span>
+                            <span class="stat-label">Total to Save</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tab-nav">
+                    <button class="tab-btn active" id="tab-sale" onclick="switchPreviewTab('sale')">
+                        <span class="tab-dot sale-dot"></span> Sale Preview
+                    </button>
+                    <button class="tab-btn" id="tab-purchase" onclick="switchPreviewTab('purchase')">
+                        <span class="tab-dot purchase-dot"></span> Purchase Preview
+                    </button>
+                </div>
+
+                <div class="table-container">
+                    <div class="table-scroll">
+                        <table>
+                            <thead id="preview-thead"></thead>
+                            <tbody id="preview-tbody"></tbody>
+                        </table>
+                    </div>
+                    <div class="table-footer">
+                        <span id="preview-showing-info">Showing 0 rows</span>
+                    </div>
+                </div>
+
+                <div class="action-bar">
+                    <button id="save-sheet-btn" class="btn btn-success" onclick="saveToGoogleSheet()">
+                        💾 Save to Google Sheet
+                    </button>
+                    <button id="download-xlsx-btn" class="btn btn-export" onclick="downloadExcel()">
+                        📥 Download Excel (.xlsx)
+                    </button>
+                </div>
+            </section>
+        </div>
+
+        <!-- VIEW 2: GOOGLE SHEET VIEWER -->
+        <div id="view-viewer-container" class="app-view">
+            <section class="section">
+                <div class="section-header">
+                    <h2>Live Google Sheet Data</h2>
+                    <p class="section-desc">View existing sheets and manage rows directly in your active Spreadsheet</p>
+                </div>
+
+                <div class="viewer-controls">
+                    <div class="control-group">
+                        <label for="sheet-select">Select Sheet Name</label>
+                        <select id="sheet-select" onchange="onSheetSelectionChange()">
+                            <option value="">-- Choose sheet --</option>
+                        </select>
+                    </div>
+
+                    <button class="btn btn-secondary" onclick="loadSheetData(3)">
+                        🔄 Refresh Data
+                    </button>
+
+                    <button class="btn btn-danger" onclick="triggerClearSheetWarning()">
+                        🗑️ Clear Data
+                    </button>
+
+                    <div class="pagination-container">
+                        <button id="prev-btn" class="btn btn-secondary" onclick="changePage(-1)" disabled>
+                            ◀ Prev
+                        </button>
+                        <span id="page-info" style="font-family:'JetBrains Mono'; font-size:0.8rem; color:var(--text-secondary);">
+                            Rows: 0 - 0
+                        </span>
+                        <button id="next-btn" class="btn btn-secondary" onclick="changePage(1)" disabled>
+                            Next ▶
+                        </button>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <div class="table-scroll">
+                        <table>
+                            <thead id="viewer-thead"></thead>
+                            <tbody id="viewer-tbody"></tbody>
+                        </table>
+                    </div>
+                    <div class="table-footer">
+                        <span id="viewer-total-info">No sheet loaded.</span>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+    </main>
+
+    <!-- Global Processing Loader -->
+    <div id="loader" class="loader-section hidden">
+        <div class="loader-container">
+            <div class="loader-spinner">
+                <div class="spinner-ring"></div>
+                <div class="spinner-ring"></div>
+                <div class="spinner-ring"></div>
+            </div>
+            <h3 id="loader-title">Processing...</h3>
+            <p id="loader-status">Uploading files</p>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alert / Toast popups -->
+    <div id="toast" class="toast hidden">
+        <span id="toast-icon">✅</span>
+        <span id="toast-msg">Success</span>
+    </div>
+
+    <!-- Clear warnings modal -->
+    <div id="modal-overlay" class="modal-overlay hidden">
+        <div class="modal-card">
+            <h3>⚠️ Warning! Clear Sheet Data</h3>
+            <p>Are you sure you want to clear all data rows inside sheet <strong id="modal-sheet-name">Sheet</strong>?<br>The two header rows (Row 1 & Row 2) will be kept, but all actual data will be permanently deleted.</p>
+            <div class="modal-actions">
+                <button class="btn btn-danger" onclick="confirmClearSheet()">Confirm & Clear</button>
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Client-side Logic Script -->
+    <script>
+        /* ═══════════════════════════════════════════════════════════════════════
+           State and Key Config
+           ═══════════════════════════════════════════════════════════════════════ */
+        const state = {
+            files: {
+                sale_details: null,
+                sale_summary: null,
+                purchase_details: null,
+                purchase_summary: null
+            },
+            newSaleData: [],
+            newPurchaseData: [],
+            saleData: [],
+            purchaseData: [],
+            currentTab: 'sale',
+            
+            // Sheet viewer state
+            selectedSheet: '',
+            viewerHeaders: [],
+            viewerRows: [],
+            viewerStartRow: 3,
+            viewerPageSize: 50,
+            viewerTotalRows: 0
+        };
+
+        const SALE_KEYS = [
+            'no', 'invoice_no', 'type', 'invoice_date', 'warehouse_name',
+            'warehouse_code', 'gst_no', 'order_id', 'item_asin', 'item_sku',
+            'item_name', 'hsn_number', 'quantity', 'item_cost', 'gross',
+            'igst', 'cgst', 'sgst', 'igst_amt', 'cgst_amt', 'sgst_amt',
+            'invoice', 'reason', 'zoho_status', 'invoice_id', 'state_code',
+            'sale_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+            'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+            'calc_cgst_amt', 'calc_sgst_amt', 'calc_invoice', 'state_code_short'
+        ];
+
+        const PURCHASE_KEYS = [
+            'no', 'invoice_no', 'warehouse_name', 'warehouse_code', 'gst_no',
+            'order_id', 'item_asin', 'item_sku', 'item_name', 'hsn_number',
+            'quantity', 'item_cost', 'gross', 'igst', 'cgst', 'sgst',
+            'igst_amt', 'cgst_amt', 'sgst_amt', 'invoice',
+            'purchase_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+            'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+            'calc_cgst_amt', 'calc_sgst_amt', 'calc_total_amt'
+        ];
+
+        const SALE_LABELS = [
+            'No.', 'Invoice No', 'TYPE', 'Invoice Date', 'Warehouse',
+            'WH Code', 'GST No', 'Order ID', 'Item Asin', 'Item SKU',
+            'Item Name', 'HSN', 'Qty', 'Cost', 'Gross',
+            'IGST%', 'CGST%', 'SGST%', 'IGST Amt', 'CGST Amt', 'SGST Amt',
+            'Invoice', 'Reason', 'Zoho', 'invoice id', 'State Code',
+            'SALE UNIQUE ID', 'Qty*', 'Cost*', 'Gross*',
+            'IGST*', 'CGST*', 'SGST*', 'IGST A*', 'CGST A*', 'SGST A*',
+            'Invoice*', 'STATE'
+        ];
+
+        const PURCHASE_LABELS = [
+            'No.', 'Invoice No', 'Warehouse', 'WH Code', 'GST No',
+            'Order ID', 'Item Asin', 'Item SKU', 'Item Name', 'HSN',
+            'Qty', 'Cost', 'Gross', 'IGST%', 'CGST%', 'SGST%',
+            'IGST Amt', 'CGST Amt', 'SGST Amt', 'Invoice',
+            'PURCHASE UNIQUE ID', 'Qty*', 'Cost*', 'Gross*',
+            'IGST*', 'CGST*', 'SGST*', 'IGST A*', 'CGST A*', 'SGST A*',
+            'Total Amt'
+        ];
+
+        // Initial setup
+        window.addEventListener('DOMContentLoaded', () => {
+            // Setup Drag & Drop handlers on cards
+            ['sale-details', 'sale-summary', 'purchase-details', 'purchase-summary'].forEach(id => {
+                const key = id.replace('-', '_');
+                const card = document.getElementById(`card-${id}`);
+                
+                card.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    card.classList.add('drag-over');
+                });
+                card.addEventListener('dragleave', () => {
+                    card.classList.remove('drag-over');
+                });
+                card.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    card.classList.remove('drag-over');
+                    const file = e.dataTransfer.files[0];
+                    if (file && (file.name.endsWith('.xls') || file.name.endsWith('.xlsx'))) {
+                        const input = document.getElementById(`input-${id}`);
+                        input.files = e.dataTransfer.files;
+                        handleFileSelect(key, input);
+                    } else {
+                        showToast('❌', 'Please drop a valid .xls or .xlsx Excel file', true);
+                    }
+                });
+            });
+
+            // Load Sheet dropdown on launch
+            refreshSheetDropdown();
+        });
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           Navigation and General Utilities
+           ═══════════════════════════════════════════════════════════════════════ */
+        function switchView(view) {
+            document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.app-view').forEach(v => v.classList.remove('active'));
+            
+            if (view === 'upload') {
+                document.getElementById('mode-upload').classList.add('active');
+                document.getElementById('view-upload-container').classList.add('active');
+            } else {
+                document.getElementById('mode-view').classList.add('active');
+                document.getElementById('view-viewer-container').classList.add('active');
+                refreshSheetDropdown();
+            }
+        }
+
+        function showToast(icon, msg, isError = false) {
+            const toast = document.getElementById('toast');
+            const iconEl = document.getElementById('toast-icon');
+            const msgEl = document.getElementById('toast-msg');
+
+            iconEl.textContent = icon;
+            msgEl.textContent = msg;
+
+            if (isError) {
+                toast.classList.add('error');
+            } else {
+                toast.classList.remove('error');
+            }
+
+            toast.classList.remove('hidden');
+            clearTimeout(window.toastTimer);
+            window.toastTimer = setTimeout(() => {
+                toast.classList.add('hidden');
+            }, 6000);
+        }
+
+        function showLoader(title, status, percentage = 0) {
+            document.getElementById('loader-title').textContent = title;
+            document.getElementById('loader-status').textContent = status;
+            document.getElementById('progress-fill').style.width = percentage + '%';
+            document.getElementById('loader').classList.remove('hidden');
+        }
+
+        function hideLoader() {
+            document.getElementById('loader').classList.add('hidden');
+        }
+
+        function formatNumber(num) {
+            if (num === null || num === undefined) return '0';
+            return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        }
+
+        function triggerInput(id) {
+            document.getElementById(`input-${id}`).click();
+        }
+
+        function handleFileSelect(key, input) {
+            const file = input.files[0];
+            const cardId = `card-${key.replace('_', '-')}`;
+            const nameEl = document.getElementById(`name-${key.replace('_', '-')}`);
+            const statusEl = document.querySelector(`#${cardId} .file-status`);
+            const card = document.getElementById(cardId);
+
+            if (file) {
+                state.files[key] = file;
+                nameEl.textContent = file.name;
+                card.classList.add('file-added');
+                statusEl.textContent = '✅ File uploaded';
+                checkAllFilesUploaded();
+            }
+        }
+
+        function checkAllFilesUploaded() {
+            const allUploaded = Object.keys(state.files).every(k => state.files[k] !== null);
+            const processBtn = document.getElementById('process-btn');
+            processBtn.disabled = !allUploaded;
+        }
+
+        function resetUploads() {
+            state.files = { sale_details: null, sale_summary: null, purchase_details: null, purchase_summary: null };
+            ['sale-details', 'sale-summary', 'purchase-details', 'purchase-summary'].forEach(id => {
+                const card = document.getElementById(`card-${id}`);
+                const nameEl = document.getElementById(`name-${id}`);
+                const statusEl = document.querySelector(`#card-${id} .file-status`);
+                card.classList.remove('file-added');
+                nameEl.textContent = '';
+                statusEl.textContent = 'Drag & Drop .xls/.xlsx file';
+                document.getElementById(`input-${id}`).value = '';
+            });
+            document.getElementById('process-btn').disabled = true;
+            document.getElementById('result-section').classList.add('hidden');
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           File Parsing and Calculation Engine
+           ═══════════════════════════════════════════════════════════════════════ */
+        function readFileAsArrayBuffer(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = (e) => reject(e);
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        async function parseExcelFile(file) {
+            const arrayBuffer = await readFileAsArrayBuffer(file);
+            const workbook = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const range = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            return parseSheetToObjects(range);
+        }
+
+        function parseSheetToObjects(range) {
+            if (range.length <= 1) return [];
+            
+            // Search row headers: Python script extracts from index 1 (Row 2)
+            // Let's ensure headers are found
+            let headerRowIndex = 1;
+            if (range.length <= headerRowIndex) {
+                headerRowIndex = 0; // fallback if tiny sheet
+            }
+            
+            const headers = range[headerRowIndex].map(h => String(h || '').trim());
+            const rows = [];
+
+            for (let r = headerRowIndex + 1; r < range.length; r++) {
+                const row = range[r];
+                if (!row || row.length === 0) continue;
+                
+                // Skip if entire row is empty
+                const isAllEmpty = row.every(cell => cell === null || cell === undefined || cell === '');
+                if (isAllEmpty) continue;
+
+                const rowObj = {};
+                for (let c = 0; c < headers.length; c++) {
+                    const key = headers[c] || `Col_${c}`;
+                    rowObj[key] = row[c];
+                }
+                rows.push(rowObj);
+            }
+            return rows;
+        }
+
+        // Calculation helper rules
+        function safeFloat(val, fallback = 0) {
+            if (val === null || val === undefined || val === '') return fallback;
+            const f = parseFloat(val);
+            return isNaN(f) ? fallback : f;
+        }
+
+        function safeStr(val, fallback = '') {
+            if (val === null || val === undefined) return fallback;
+            if (val instanceof Date) {
+                const d = String(val.getDate()).padStart(2, '0');
+                const m = String(val.getMonth() + 1).padStart(2, '0');
+                const y = val.getFullYear();
+                return `${d}/${m}/${y}`;
+            }
+            const s = String(val).trim();
+            if (s.endsWith('.0')) {
+                const parsed = parseFloat(s);
+                if (!isNaN(parsed) && Number.isInteger(parsed)) {
+                    return String(parsed);
+                }
+            }
+            return s;
+        }
+
+        function roundup2(val) {
+            const v = safeFloat(val);
+            return Math.ceil(v * 100) / 100;
+        }
+
+        function extractStateShort(stateCodeFull) {
+            if (!stateCodeFull) return '';
+            const s = String(stateCodeFull);
+            const start = s.indexOf('(');
+            if (start !== -1) {
+                const end = s.indexOf(')', start);
+                if (end !== -1) {
+                    return s.slice(start, end + 1);
+                }
+            }
+            return s;
+        }
+
+        function getFinancialYear() {
+            const now = new Date();
+            const year = now.getFullYear();
+            if (now.getMonth() >= 3) { // April (index 3) or later
+                return `${year}-${String(year + 1).slice(2)}`;
+            } else {
+                return `${year - 1}-${String(year).slice(2)}`;
+            }
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           Merge / VLOOKUP Processing
+           ═══════════════════════════════════════════════════════════════════════ */
+        async function startFileProcessing() {
+            showLoader('Parsing Files', 'Reading Sale Details...', 10);
+            
+            try {
+                // 1. Load & Parse all files locally
+                const saleDetails = await parseExcelFile(state.files.sale_details);
+                showLoader('Parsing Files', 'Reading Sale Summary...', 25);
+                
+                const saleSummary = await parseExcelFile(state.files.sale_summary);
+                showLoader('Parsing Files', 'Reading Purchase Details...', 40);
+                
+                const purchaseDetails = await parseExcelFile(state.files.purchase_details);
+                showLoader('Parsing Files', 'Reading Purchase Summary...', 55);
+                
+                const purchaseSummary = await parseExcelFile(state.files.purchase_summary);
+                showLoader('Processing Data', 'Executing VLOOKUP mappings...', 70);
+
+                // 2. Build Lookups
+                const saleLookup = {};
+                saleSummary.forEach(row => {
+                    let key = '';
+                    for (const pk of ['New Invoice No.', 'New Invoice No', 'New invoice No.']) {
+                        if (row[pk] !== undefined) { key = safeStr(row[pk]); break; }
+                    }
+                    if (key) {
+                        saleLookup[key] = {
+                            invoice_type: safeStr(row['Invoice Type']),
+                            invoice_id: safeStr(row['Invoice No'] || row['Invoice No.']),
+                            state_code: safeStr(row['State Code']),
+                            channel: safeStr(row['Channel'])
+                        };
+                    }
+                });
+
+                const purchaseLookup = {};
+                purchaseSummary.forEach(row => {
+                    let key = '';
+                    for (const pk of ['Invoice No.', 'Invoice No', 'Invoice Number']) {
+                        if (row[pk] !== undefined) { key = safeStr(row[pk]); break; }
+                    }
+                    if (key) {
+                        purchaseLookup[key] = {
+                            invoice_type: safeStr(row['Invoice Type']),
+                            order_no: safeStr(row['Order No'])
+                        };
+                    }
+                });
+
+                // 3. Process SALE lines
+                const processedSales = saleDetails.map((row, index) => {
+                    const invoiceNo = safeStr(row['Invoice No']);
+                    const sumItem = saleLookup[invoiceNo] || {};
+                    const orderId = safeStr(row['Order ID']);
+                    const itemSku = safeStr(row['Item SKU']);
+                    
+                    const qty = safeFloat(row['Quantity']);
+                    const cost = safeFloat(row['Item Cost'] || row['Item cost']);
+                    const gross = safeFloat(row['Gross']);
+                    const igst = safeFloat(row['IGST']);
+                    const cgst = safeFloat(row['CGST']);
+                    const sgst = safeFloat(row['SGST']);
+                    const igstAmt = safeFloat(row['IGST Amt']);
+                    const cgstAmt = safeFloat(row['CGST Amt']);
+                    const sgstAmt = safeFloat(row['SGST Amt']);
+                    
+                    const calcGross = roundup2(qty * cost);
+                    const calcIgstAmt = igst ? roundup2(calcGross * igst / 100) : 0;
+                    const calcCgstAmt = cgst ? roundup2(calcGross * cgst / 100) : 0;
+                    const calcSgstAmt = sgst ? roundup2(calcGross * sgst / 100) : 0;
+                    const calcInvoice = roundup2(calcGross + calcIgstAmt + calcCgstAmt + calcSgstAmt);
+
+                    return {
+                        no: index + 1,
+                        invoice_no: invoiceNo,
+                        type: sumItem.invoice_type || '',
+                        invoice_date: safeStr(row['Invoice Date']),
+                        warehouse_name: safeStr(row['Warehouse Name']),
+                        warehouse_code: safeStr(row['Warehouse Code']),
+                        gst_no: safeStr(row['GST No']),
+                        order_id: orderId,
+                        item_asin: safeStr(row['Item Asin']),
+                        item_sku: itemSku,
+                        item_name: safeStr(row['Item Name']),
+                        hsn_number: safeStr(row['HSN Number']),
+                        quantity: qty,
+                        item_cost: cost,
+                        gross: gross,
+                        igst: igst,
+                        cgst: cgst,
+                        sgst: sgst,
+                        igst_amt: igstAmt,
+                        cgst_amt: cgstAmt,
+                        sgst_amt: sgstAmt,
+                        invoice: safeFloat(row['Invoice']),
+                        reason: safeStr(row['Reason']),
+                        zoho_status: safeStr(row['Zoho Status']),
+                        invoice_id: sumItem.invoice_id || '',
+                        state_code: sumItem.state_code || '',
+                        sale_unique_id: `${invoiceNo}-${orderId}-${itemSku}`,
+                        calc_qty: qty,
+                        calc_cost: cost,
+                        calc_gross: calcGross,
+                        calc_igst: igst,
+                        calc_cgst: cgst,
+                        calc_sgst: sgst,
+                        calc_igst_amt: calcIgstAmt,
+                        calc_cgst_amt: calcCgstAmt,
+                        calc_sgst_amt: calcSgstAmt,
+                        calc_invoice: calcInvoice,
+                        state_code_short: extractStateShort(sumItem.state_code)
+                    };
+                });
+
+                // 4. Process PURCHASE lines
+                const processedPurchases = purchaseDetails.map((row, index) => {
+                    const invoiceNo = safeStr(row['Invoice No']);
+                    const orderId = safeStr(row['Order ID']);
+                    const itemAsin = safeStr(row['Item Asin']);
+                    const itemSku = safeStr(row['Item SKU']);
+                    
+                    const qty = safeFloat(row['Quantity']);
+                    
+                    let cost = 0;
+                    if (row['Item cost'] !== undefined) cost = safeFloat(row['Item cost']);
+                    else if (row['Item Cost'] !== undefined) cost = safeFloat(row['Item Cost']);
+                    else {
+                        for (const k in row) {
+                            if (k.toLowerCase().includes('cost')) { cost = safeFloat(row[k]); break; }
+                        }
+                    }
+
+                    const gross = safeFloat(row['Gross']);
+                    const igst = safeFloat(row['IGST']);
+                    const cgst = safeFloat(row['CGST']);
+                    const sgst = safeFloat(row['SGST']);
+                    
+                    const calcGross = roundup2(qty * cost);
+                    const calcIgstAmt = igst ? roundup2(calcGross * igst / 100) : 0;
+                    const calcCgstAmt = cgst ? roundup2(calcGross * cgst / 100) : 0;
+                    const calcSgstAmt = sgst ? roundup2(calcGross * sgst / 100) : 0;
+                    const calcTotalAmt = roundup2(calcGross + calcIgstAmt + calcCgstAmt + calcSgstAmt);
+
+                    return {
+                        no: index + 1,
+                        invoice_no: invoiceNo,
+                        warehouse_name: safeStr(row['Warehouse Name']),
+                        warehouse_code: safeStr(row['Warehouse Code']),
+                        gst_no: safeStr(row['GST No']),
+                        order_id: orderId,
+                        item_asin: itemAsin,
+                        item_sku: itemSku,
+                        item_name: safeStr(row['Item Name']),
+                        hsn_number: safeStr(row['HSN Number']),
+                        quantity: qty,
+                        item_cost: cost,
+                        gross: gross,
+                        igst: igst,
+                        cgst: cgst,
+                        sgst: sgst,
+                        igst_amt: safeFloat(row['IGST Amt']),
+                        cgst_amt: safeFloat(row['CGST Amt']),
+                        sgst_amt: safeFloat(row['SGST Amt']),
+                        invoice: safeFloat(row['Invoice']),
+                        purchase_unique_id: `${invoiceNo}${orderId}${itemAsin}${itemSku}`,
+                        calc_qty: qty,
+                        calc_cost: cost,
+                        calc_gross: calcGross,
+                        calc_igst: igst,
+                        calc_cgst: cgst,
+                        calc_sgst: sgst,
+                        calc_igst_amt: calcIgstAmt,
+                        calc_cgst_amt: calcCgstAmt,
+                        calc_sgst_amt: calcSgstAmt,
+                        calc_total_amt: calcTotalAmt
+                    };
+                });
+
+                // 5. Query active spreadsheet for duplicates checks
+                showLoader('Deduplication', 'Fetching existing UNIQUE IDs from Google Sheet...', 85);
+                const targetSheetName = `AJIO & MYNTRA SALE-PURCHASE ${getFinancialYear()}`;
+                
+                google.script.run
+                    .withSuccessHandler(function(result) {
+                        if (result.success) {
+                            const existingSaleIds = new Set(result.saleIds || []);
+                            const existingPurchaseIds = new Set(result.purchaseIds || []);
+                            
+                            // Filter SALE duplicates
+                            const uniqueSales = [];
+                            let dupSales = 0;
+                            processedSales.forEach(row => {
+                                if (existingSaleIds.has(row.sale_unique_id)) {
+                                    dupSales++;
+                                } else {
+                                    uniqueSales.push(row);
+                                }
+                            });
+
+                            // Filter PURCHASE duplicates
+                            const uniquePurchases = [];
+                            let dupPurchases = 0;
+                            processedPurchases.forEach(row => {
+                                if (existingPurchaseIds.has(row.purchase_unique_id)) {
+                                    dupPurchases++;
+                                } else {
+                                    uniquePurchases.push(row);
+                                }
+                            });
+
+                            // Save results
+                            state.newSaleData = uniqueSales;
+                            state.newPurchaseData = uniquePurchases;
+                            state.saleData = uniqueSales;
+                            state.purchaseData = uniquePurchases;
+
+                            // Update UI values
+                            document.getElementById('sale-count').textContent = formatNumber(uniqueSales.length);
+                            document.getElementById('purchase-count').textContent = formatNumber(uniquePurchases.length);
+                            document.getElementById('total-count').textContent = formatNumber(uniqueSales.length + uniquePurchases.length);
+
+                            if (dupSales > 0 || dupPurchases > 0) {
+                                showToast('🔍', `Duplicates skipped: Sale=${dupSales}, Purchase=${dupPurchases}`);
+                            } else {
+                                showToast('✅', 'Data merged successfully! No duplicate rows found.');
+                            }
+
+                            // Show UI components
+                            hideLoader();
+                            document.getElementById('result-section').classList.remove('hidden');
+                            switchPreviewTab('sale');
+                            
+                            // Scroll down to results
+                            document.getElementById('result-section').scrollIntoView({ behavior: 'smooth' });
+
+                        } else {
+                            hideLoader();
+                            showToast('❌', 'Error loading sheet data: ' + result.error, true);
+                        }
+                    })
+                    .withFailureHandler(function(err) {
+                        hideLoader();
+                        showToast('❌', 'Google Sheets fetch failed: ' + err.message, true);
+                    })
+                    .getExistingUniqueIds(targetSheetName);
+
+            } catch (err) {
+                hideLoader();
+                showToast('❌', 'Parsing error: ' + err.message, true);
+                console.error(err);
+            }
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           Preview rendering
+           ═══════════════════════════════════════════════════════════════════════ */
+        function switchPreviewTab(tab) {
+            state.currentTab = tab;
+            document.getElementById('tab-sale').classList.toggle('active', tab === 'sale');
+            document.getElementById('tab-purchase').classList.toggle('active', tab === 'purchase');
+            
+            renderPreviewTable();
+        }
+
+        function renderPreviewTable() {
+            const thead = document.getElementById('preview-thead');
+            const tbody = document.getElementById('preview-tbody');
+            
+            const isSale = state.currentTab === 'sale';
+            const keys = isSale ? SALE_KEYS : PURCHASE_KEYS;
+            const labels = isSale ? SALE_LABELS : PURCHASE_LABELS;
+            const data = isSale ? state.saleData : state.purchaseData;
+            const headerClass = isSale ? 'sale-th' : 'purchase-th';
+
+            // Headings
+            thead.innerHTML = `<tr>${labels.map(l => `<th class="${headerClass}">${l}</th>`).join('')}</tr>`;
+
+            // Max 100 rows for preview performance
+            const previewLimit = data.slice(0, 100);
+
+            if (previewLimit.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="${keys.length}" style="text-align:center; color:var(--text-muted);">No new records to preview</td></tr>`;
+                document.getElementById('preview-showing-info').textContent = 'Showing 0 rows';
+                return;
+            }
+
+            tbody.innerHTML = previewLimit.map((row, rIdx) => {
+                return `<tr>${keys.map(k => {
+                    let val = row[k];
+                    if (val === null || val === undefined) val = '';
+                    if (typeof val === 'number' && !Number.isInteger(val)) val = val.toFixed(2);
+                    return `<td title="${String(val)}">${String(val)}</td>`;
+                }).join('')}</tr>`;
+            }).join('');
+
+            document.getElementById('preview-showing-info').textContent = `Showing first ${previewLimit.length} of ${formatNumber(data.length)} new records`;
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           Action: Save to Google Sheets
+           ═══════════════════════════════════════════════════════════════════════ */
+        function saveToGoogleSheet() {
+            if (state.newSaleData.length === 0 && state.newPurchaseData.length === 0) {
+                showToast('⚠️', 'No new records to save!', true);
+                return;
+            }
+
+            showLoader('Saving to Sheet', 'Converting data values...', 10);
+            
+            const saleRows2D = state.newSaleData.map((row, index) => {
+                row.no = index + 1; // Recalculate row no index
+                return SALE_KEYS.map(k => {
+                    const v = row[k];
+                    return (v === undefined || v === null) ? '' : v;
+                });
+            });
+
+            const purchaseRows2D = state.newPurchaseData.map((row, index) => {
+                row.no = index + 1; // Recalculate row no index
+                return PURCHASE_KEYS.map(k => {
+                    const v = row[k];
+                    return (v === undefined || v === null) ? '' : v;
+                });
+            });
+
+            const targetSheetName = `AJIO & MYNTRA SALE-PURCHASE ${getFinancialYear()}`;
+            showLoader('Saving to Sheet', `Writing to sheet: ${targetSheetName}...`, 50);
+
+            google.script.run
+                .withSuccessHandler(function(result) {
+                    hideLoader();
+                    if (result.success) {
+                        showToast('✅', `Success! Saved ${result.saleRows} sale & ${result.purchaseRows} purchase rows!`);
+                        resetUploads();
+                    } else {
+                        showToast('❌', 'Save failed: ' + result.error, true);
+                    }
+                })
+                .withFailureHandler(function(err) {
+                    hideLoader();
+                    showToast('❌', 'App Script Error: ' + err.message, true);
+                })
+                .writeDataToSheet(targetSheetName, saleRows2D, purchaseRows2D, true); // true = append mode
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           Action: Download Local Excel File
+           ═══════════════════════════════════════════════════════════════════════ */
+        function downloadExcel() {
+            if (state.newSaleData.length === 0 && state.newPurchaseData.length === 0) {
+                showToast('⚠️', 'No processed records available to download.', true);
+                return;
+            }
+
+            try {
+                showLoader('Exporting File', 'Building worksheets...', 30);
+                const wb = XLSX.utils.book_new();
+                const wsData = [];
+
+                // Row 1: Merged title categories
+                const row1 = Array(71).fill('');
+                row1[0] = 'SALE';
+                row1[39] = 'PURCHASE'; // Column 40 starts at index 39
+                wsData.push(row1);
+
+                // Row 2: Header labels
+                const row2 = Array(71).fill('');
+                SALE_LABELS.forEach((label, i) => { row2[i] = label; });
+                PURCHASE_LABELS.forEach((label, i) => { row2[39 + i] = label; });
+                wsData.push(row2);
+
+                // Row 3+: Mapped values side by side
+                const maxRows = Math.max(state.newSaleData.length, state.newPurchaseData.length);
+                for (let r = 0; r < maxRows; r++) {
+                    const rowData = Array(71).fill('');
+                    
+                    // Populate SALE data
+                    if (r < state.newSaleData.length) {
+                        const rowObj = state.newSaleData[r];
+                        rowObj.no = r + 1;
+                        SALE_KEYS.forEach((key, colIdx) => {
+                            rowData[colIdx] = rowObj[key] !== undefined ? rowObj[key] : '';
+                        });
+                    }
+
+                    // Populate PURCHASE data
+                    if (r < state.newPurchaseData.length) {
+                        const rowObj = state.newPurchaseData[r];
+                        rowObj.no = r + 1;
+                        PURCHASE_KEYS.forEach((key, colIdx) => {
+                            rowData[39 + colIdx] = rowObj[key] !== undefined ? rowObj[key] : '';
+                        });
+                    }
+
+                    wsData.push(rowData);
+                }
+
+                const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+                // Apply Cell Merges (A1:AL1, AN1:BR1)
+                ws['!merges'] = [
+                    { s: { r: 0, c: 0 }, e: { r: 0, c: 37 } },
+                    { s: { r: 0, c: 39 }, e: { r: 0, c: 69 } }
+                ];
+
+                // Width definitions
+                ws['!cols'] = Array(71).fill({ wch: 14 });
+                ws['!cols'][10] = { wch: 40 }; // Sale Item Name
+                ws['!cols'][48] = { wch: 40 }; // Purchase Item Name
+
+                const fyStr = getFinancialYear();
+                XLSX.utils.book_append_sheet(wb, ws, `SALE-PURCHASE ${fyStr}`);
+                
+                showLoader('Exporting File', 'Triggering browser download...', 80);
+                XLSX.writeFile(wb, `AJIO_MYNTRA_FLIPKART_Sale_Purchase_${fyStr}.xlsx`);
+                
+                hideLoader();
+                showToast('✅', 'Excel downloaded successfully!');
+            } catch (err) {
+                hideLoader();
+                showToast('❌', 'Export failed: ' + err.message, true);
+            }
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           Google Sheet Viewer Panel Logic
+           ═══════════════════════════════════════════════════════════════════════ */
+        function refreshSheetDropdown() {
+            google.script.run
+                .withSuccessHandler(function(result) {
+                    if (result.success) {
+                        const select = document.getElementById('sheet-select');
+                        const currentVal = select.value;
+                        
+                        select.innerHTML = '<option value="">-- Choose sheet --</option>';
+                        result.sheets.forEach(sh => {
+                            const opt = document.createElement('option');
+                            opt.value = sh.name;
+                            opt.textContent = `${sh.name} (${sh.rows} rows)`;
+                            select.appendChild(opt);
+                        });
+
+                        // Attempt to restore selection or select default FY sheet
+                        const defaultSheetName = `AJIO & MYNTRA SALE-PURCHASE ${result.fy}`;
+                        const hasDefault = result.sheets.some(s => s.name === defaultSheetName);
+                        
+                        if (currentVal && result.sheets.some(s => s.name === currentVal)) {
+                            select.value = currentVal;
+                        } else if (hasDefault) {
+                            select.value = defaultSheetName;
+                        }
+                        
+                        if (select.value) {
+                            state.selectedSheet = select.value;
+                            loadSheetData(3); // Start loading from Row 3 (skip headers)
+                        }
+                    }
+                })
+                .getSheetNames();
+        }
+
+        function onSheetSelectionChange() {
+            const select = document.getElementById('sheet-select');
+            state.selectedSheet = select.value;
+            if (state.selectedSheet) {
+                loadSheetData(3);
+            } else {
+                clearViewerTable();
+            }
+        }
+
+        function loadSheetData(startRow) {
+            if (!state.selectedSheet) {
+                showToast('⚠️', 'Please select a sheet first!', true);
+                return;
+            }
+
+            state.viewerStartRow = startRow;
+            showLoader('Loading Data', `Fetching rows ${startRow} onwards from ${state.selectedSheet}...`, 40);
+
+            google.script.run
+                .withSuccessHandler(function(result) {
+                    hideLoader();
+                    if (result.success) {
+                        state.viewerHeaders = result.headers || [];
+                        state.viewerRows = result.data || [];
+                        state.viewerTotalRows = result.totalRows || 0;
+
+                        renderViewerTable();
+                    } else {
+                        showToast('❌', 'Load error: ' + result.error, true);
+                        clearViewerTable();
+                    }
+                })
+                .withFailureHandler(function(err) {
+                    hideLoader();
+                    showToast('❌', 'Script error: ' + err.message, true);
+                    clearViewerTable();
+                })
+                .getSheetData(state.selectedSheet, startRow, state.viewerPageSize);
+        }
+
+        function renderViewerTable() {
+            const thead = document.getElementById('viewer-thead');
+            const tbody = document.getElementById('viewer-tbody');
+            const pageInfo = document.getElementById('page-info');
+            const totalInfo = document.getElementById('viewer-total-info');
+            const prevBtn = document.getElementById('prev-btn');
+            const nextBtn = document.getElementById('next-btn');
+
+            if (state.viewerHeaders.length === 0) {
+                thead.innerHTML = '';
+                tbody.innerHTML = '<tr><td style="text-align:center; color:var(--text-muted);">Sheet is empty or has no headers</td></tr>';
+                totalInfo.textContent = 'Empty sheet';
+                prevBtn.disabled = true;
+                nextBtn.disabled = true;
+                return;
+            }
+
+            // Standard spreadsheet headers format (Row 2 headers used as main preview column labels)
+            const activeHeaders = state.viewerHeaders[1] || state.viewerHeaders[0] || [];
+            thead.innerHTML = `<tr>${activeHeaders.map(h => `<th style="background:rgba(255,255,255,0.02); border-bottom-color:var(--border-glass);">${h}</th>`).join('')}</tr>`;
+
+            if (state.viewerRows.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="${activeHeaders.length}" style="text-align:center; color:var(--text-muted);">No records found in this page range</td></tr>`;
+            } else {
+                tbody.innerHTML = state.viewerRows.map(row => {
+                    return `<tr>${row.map(val => {
+                        let displayVal = (val === null || val === undefined) ? '' : val;
+                        // Format numeric strings
+                        if (typeof displayVal === 'number' && !Number.isInteger(displayVal)) {
+                            displayVal = displayVal.toFixed(2);
+                        }
+                        return `<td title="${String(displayVal)}">${String(displayVal)}</td>`;
+                    }).join('')}</tr>`;
+                }).join('');
+            }
+
+            // Update pagination values
+            const endRow = Math.min(state.viewerStartRow + state.viewerPageSize - 1, state.viewerTotalRows + 2);
+            pageInfo.textContent = `Rows: ${state.viewerStartRow} - ${endRow}`;
+            totalInfo.textContent = `Total rows: ${formatNumber(state.viewerTotalRows)} (excluding header rows)`;
+
+            prevBtn.disabled = (state.viewerStartRow <= 3);
+            nextBtn.disabled = (endRow >= state.viewerTotalRows + 2);
+        }
+
+        function changePage(direction) {
+            let nextStart = state.viewerStartRow + (direction * state.viewerPageSize);
+            if (nextStart < 3) nextStart = 3;
+            loadSheetData(nextStart);
+        }
+
+        function clearViewerTable() {
+            document.getElementById('viewer-thead').innerHTML = '';
+            document.getElementById('viewer-tbody').innerHTML = '';
+            document.getElementById('page-info').textContent = 'Rows: 0 - 0';
+            document.getElementById('viewer-total-info').textContent = 'No sheet selected.';
+            document.getElementById('prev-btn').disabled = true;
+            document.getElementById('next-btn').disabled = true;
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           Warning Modal and Clear Data operations
+           ═══════════════════════════════════════════════════════════════════════ */
+        function triggerClearSheetWarning() {
+            if (!state.selectedSheet) {
+                showToast('⚠️', 'Please select a sheet to clear first!', true);
+                return;
+            }
+            document.getElementById('modal-sheet-name').textContent = state.selectedSheet;
+            document.getElementById('modal-overlay').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('modal-overlay').classList.add('hidden');
+        }
+
+        function confirmClearSheet() {
+            closeModal();
+            showLoader('Clearing Data', `Wiping values inside ${state.selectedSheet}...`, 50);
+
+            google.script.run
+                .withSuccessHandler(function(result) {
+                    hideLoader();
+                    if (result.success) {
+                        showToast('✅', `Successfully cleared all rows in ${state.selectedSheet}!`);
+                        refreshSheetDropdown(); // Refresh labels & rows counts
+                    } else {
+                        showToast('❌', 'Failed to clear sheet: ' + result.error, true);
+                    }
+                })
+                .withFailureHandler(function(err) {
+                    hideLoader();
+                    showToast('❌', 'Clear Sheet Error: ' + err.message, true);
+                })
+                .clearSheetData(state.selectedSheet);
+        }
+    </script>
+</body>
+</html>

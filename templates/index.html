@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sale&Purchase Hub</title>
+    <meta name="description" content="Upload, merge, and export Sale & Purchase data from AJIO, Myntra, and Flipkart in one click">
+    <link rel="icon" href="/static/icon.png" type="image/png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Background Animation -->
+    <div class="bg-animation">
+        <div class="bg-orb bg-orb-1"></div>
+        <div class="bg-orb bg-orb-2"></div>
+        <div class="bg-orb bg-orb-3"></div>
+    </div>
+
+    <!-- Header -->
+    <header class="app-header">
+        <div class="logo">
+            <div class="logo-icon">
+                <img src="/static/icon.png" alt="Logo" style="width: 32px; height: 32px; object-fit: contain;">
+            </div>
+            <div class="logo-text">
+                <h1>Sale & Purchase Hub</h1>
+                <p>AJIO • MYNTRA • FLIPKART</p>
+            </div>
+        </div>
+
+        <div id="header-status" class="header-status hidden">
+            <span class="status-dot"></span>
+            <span id="header-status-text">Data loaded</span>
+        </div>
+    </header>
+
+    <!-- Main Content — Single Page Flow -->
+    <main class="main-content">
+
+        <!-- ═══ SLIM UPLOAD STRIP (always visible, compact) ═══ -->
+        <section id="upload-section" class="section">
+            <div class="upload-strip">
+                <div class="upload-strip-item sale-strip" id="card-sale-details">
+                    <span class="strip-dot sale-dot-indicator"></span>
+                    <span class="strip-label">Sale Details</span>
+                    <input type="file" accept=".xls,.xlsx" class="file-input" id="file-sale-details">
+                    <label for="file-sale-details" class="strip-btn">Choose</label>
+                    <span class="strip-filename" id="name-sale-details">No file</span>
+                    <span class="file-status strip-status">—</span>
+                </div>
+
+                <div class="upload-strip-item sale-strip" id="card-sale-summary">
+                    <span class="strip-dot sale-dot-indicator"></span>
+                    <span class="strip-label">Sale Summary</span>
+                    <input type="file" accept=".xls,.xlsx" class="file-input" id="file-sale-summary">
+                    <label for="file-sale-summary" class="strip-btn">Choose</label>
+                    <span class="strip-filename" id="name-sale-summary">No file</span>
+                    <span class="file-status strip-status">—</span>
+                </div>
+
+                <div class="upload-strip-item purchase-strip" id="card-purchase-details">
+                    <span class="strip-dot purchase-dot-indicator"></span>
+                    <span class="strip-label">Purchase Details</span>
+                    <input type="file" accept=".xls,.xlsx" class="file-input" id="file-purchase-details">
+                    <label for="file-purchase-details" class="strip-btn">Choose</label>
+                    <span class="strip-filename" id="name-purchase-details">No file</span>
+                    <span class="file-status strip-status">—</span>
+                </div>
+
+                <div class="upload-strip-item purchase-strip" id="card-purchase-summary">
+                    <span class="strip-dot purchase-dot-indicator"></span>
+                    <span class="strip-label">Purchase Summary</span>
+                    <input type="file" accept=".xls,.xlsx" class="file-input" id="file-purchase-summary">
+                    <label for="file-purchase-summary" class="strip-btn">Choose</label>
+                    <span class="strip-filename" id="name-purchase-summary">No file</span>
+                    <span class="file-status strip-status">—</span>
+                </div>
+
+                <button id="process-btn" class="btn btn-primary btn-process" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16">
+                        <path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        <path d="M9 12l2 2 4-4"/>
+                    </svg>
+                    Process & Merge
+                </button>
+            </div>
+        </section>
+
+        <!-- Processing Loader -->
+        <section id="loader-section" class="section hidden">
+            <div class="loader-container">
+                <div class="loader-spinner">
+                    <div class="spinner-ring"></div>
+                    <div class="spinner-ring"></div>
+                    <div class="spinner-ring"></div>
+                </div>
+                <h3>Processing Files...</h3>
+                <p id="loader-text">Reading Sale Details...</p>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ DATA PREVIEW SECTION ═══ -->
+        <section id="result-section" class="section hidden">
+            <!-- Stats bar + tabs in one row -->
+            <div class="data-toolbar">
+                <div class="toolbar-left">
+                    <div class="stat-pill sale-stat">📊 <strong id="sale-count">0</strong> Sale</div>
+                    <div class="stat-pill purchase-stat">🛒 <strong id="purchase-count">0</strong> Purchase</div>
+                    <div class="stat-pill total-stat">✅ <strong id="total-count">0</strong> Total</div>
+                    <span id="fy-badge" class="fy-badge"></span>
+                </div>
+                <div class="toolbar-right">
+                    <div class="tab-nav">
+                        <button class="tab-btn active" data-tab="sale" id="tab-sale">
+                            <span class="tab-dot sale-dot"></span> Sale
+                        </button>
+                        <button class="tab-btn" data-tab="purchase" id="tab-purchase">
+                            <span class="tab-dot purchase-dot"></span> Purchase
+                        </button>
+                    </div>
+
+                    <select id="rows-per-page" class="compact-select" title="Rows to show">
+                        <option value="25" selected>25 rows</option>
+                        <option value="50">50 rows</option>
+                        <option value="100">100 rows</option>
+                        <option value="500">500 rows</option>
+                        <option value="1000">1000 rows</option>
+                    </select>
+
+                    <button id="export-btn" class="btn btn-export btn-sm">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                            <polyline points="7,10 12,15 17,10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        <span>Export .xlsx</span>
+                    </button>
+
+                    <button id="sync-sheet-btn" class="btn btn-sync btn-sm">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                            <path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/>
+                            <rect x="8" y="2" width="8" height="4" rx="1"/>
+                            <path d="M12 11v6M9 14l3 3 3-3"/>
+                        </svg>
+                        <span>Sync Sheet</span>
+                    </button>
+
+                    <button id="clear-data-btn" class="btn btn-danger-outline btn-sm" onclick="clearAllData()">
+                        🗑️ Clear
+                    </button>
+                </div>
+            </div>
+
+            <!-- Data Table -->
+            <div class="table-container" id="table-container">
+                <div class="table-scroll">
+                    <table id="data-table">
+                        <thead id="table-head"></thead>
+                        <tbody id="table-body"></tbody>
+                    </table>
+                </div>
+                <div class="table-footer">
+                    <span id="showing-info">Showing 0 rows</span>
+                    <button id="load-more-btn" class="btn btn-secondary btn-sm hidden">Load More Rows</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══ GOOGLE SHEET VIEWER ═══ -->
+        <section id="sheet-viewer-section" class="section">
+            <div class="sheet-toolbar">
+                <div class="toolbar-left">
+                    <span class="toolbar-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18" style="color:var(--accent-purchase);">
+                            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                            <polyline points="14,2 14,8 20,8"/>
+                        </svg>
+                        Google Sheet Data
+                    </span>
+                    <select id="sheet-select" class="compact-select" onchange="onSheetSelectionChange()" style="display:none;">
+                        <option value="">-- Loading sheets... --</option>
+                    </select>
+                </div>
+
+                <div class="toolbar-right">
+                    <div class="search-box">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" class="search-icon">
+                            <circle cx="11" cy="11" r="8"/>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        <input type="text" id="universal-search" placeholder="Search across all columns..." class="search-input" oninput="handleUniversalSearch()">
+                    </div>
+
+                    <select id="sheet-rows-per-page" class="compact-select" title="Rows per page" onchange="onSheetRowsChange()">
+                        <option value="25" selected>25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                        <option value="500">500</option>
+                    </select>
+
+                    <button class="btn btn-secondary btn-sm" onclick="loadSheetData(3)">🔄 Refresh</button>
+                    <button class="btn btn-danger-outline btn-sm" onclick="triggerClearSheetWarning()">🗑️ Clear</button>
+
+                    <div class="pagination-container">
+                        <button id="prev-btn" class="btn btn-secondary btn-sm" onclick="changePage(-1)" disabled>◀</button>
+                        <span id="page-info" class="page-info-text">0 - 0</span>
+                        <button id="next-btn" class="btn btn-secondary btn-sm" onclick="changePage(1)" disabled>▶</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <div class="table-scroll">
+                    <table>
+                        <thead id="viewer-thead"></thead>
+                        <tbody id="viewer-tbody"></tbody>
+                    </table>
+                </div>
+                <div class="sheet-tabs-bar" id="sheet-tabs-bar">
+                    <!-- Dynamic sheet tabs like Excel go here -->
+                </div>
+                <div class="table-footer">
+                    <span id="viewer-total-info">Loading sheet data...</span>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Global Processing Loader -->
+    <div id="global-loader" class="loader-section hidden" style="position: fixed; inset: 0; background: rgba(255, 255, 255, 0.85); z-index: 1000; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(10px);">
+        <div class="loader-container">
+            <div class="loader-spinner">
+                <div class="spinner-ring"></div>
+                <div class="spinner-ring"></div>
+                <div class="spinner-ring"></div>
+            </div>
+            <h3 id="global-loader-title">Loading...</h3>
+            <p id="global-loader-status">Please wait...</p>
+            <div class="progress-bar" id="global-progress-bar" style="margin-top:12px; display:none;">
+                <div class="progress-fill" id="global-progress-fill" style="width:0%;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast hidden">
+        <span id="toast-icon">✅</span>
+        <span id="toast-message">Done</span>
+    </div>
+
+    <!-- Clear Data Confirmation Modal -->
+    <div id="modal-overlay" class="modal-overlay hidden">
+        <div class="modal-card">
+            <h3>⚠️ Clear All Data?</h3>
+            <p>Are you sure? This will permanently delete all processed Sale & Purchase records. You'll need to upload files again.</p>
+            <div class="modal-actions">
+                <button class="btn btn-danger" onclick="confirmClearData()">Confirm & Clear</button>
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sync to Google Sheets Modal -->
+    <div id="sync-modal-overlay" class="modal-overlay hidden">
+        <div class="modal-card" style="width:440px;">
+            <h3 style="color: var(--accent-sale);">📤 Sync Data to Google Sheets</h3>
+            <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:16px;">
+                This will write the processed Sale and Purchase records directly into your Google Sheet.
+            </p>
+
+            <div class="control-group" style="margin-bottom:12px; text-align:left;">
+                <label for="sync-sheet-select">Select Target Sheet</label>
+                <select id="sync-sheet-select" style="width:100%; padding:8px 12px; border-radius:var(--radius-sm); border:1px solid var(--border-glass); font-size:0.85rem;">
+                    <option value="">-- Loading sheets... --</option>
+                </select>
+            </div>
+
+            <div class="control-group" style="margin-bottom:16px; text-align:left;">
+                <label style="font-size:0.7rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.05em; margin-bottom:4px;">Sync Mode</label>
+                <div style="display:flex; gap:16px; margin-top:6px; font-size:0.85rem;">
+                    <label style="display:flex; align-items:center; gap:6px; font-weight:normal; text-transform:none; cursor:pointer; color:var(--text-primary);">
+                        <input type="radio" name="sync-mode" value="append" checked> Append (Keep existing)
+                    </label>
+                    <label style="display:flex; align-items:center; gap:6px; font-weight:normal; text-transform:none; cursor:pointer; color:var(--text-primary);">
+                        <input type="radio" name="sync-mode" value="overwrite"> Overwrite (Fresh)
+                    </label>
+                </div>
+            </div>
+
+            <div class="modal-actions">
+                <button id="start-sync-btn" class="btn btn-primary" onclick="startSyncToGoogleSheets()">Start Syncing</button>
+                <button class="btn btn-secondary" onclick="closeSyncModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Clear Sheet Warning Modal -->
+    <div id="clear-sheet-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <h3>⚠️ Clear Sheet Data?</h3>
+            <p>Are you sure you want to clear all data rows inside sheet <strong id="modal-sheet-name">Sheet</strong>?<br>Headers will be kept, but all records will be permanently deleted.</p>
+            <div class="modal-actions">
+                <button class="btn btn-danger" onclick="confirmClearSheet()">Confirm & Clear</button>
+                <button class="btn btn-secondary" onclick="closeClearSheetModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sync Success Modal -->
+    <div id="sync-success-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="width:400px; border-top: 5px solid var(--accent-sale);">
+            <div style="font-size: 3rem; margin-bottom: 12px;">🎉</div>
+            <h3 style="color: var(--accent-sale); margin-bottom: 12px;">Sync Completed!</h3>
+            <div style="text-align: left; background: var(--bg-secondary); padding: 14px; border-radius: var(--radius-md); margin-bottom: 18px; font-size: 0.82rem; color: var(--text-secondary); line-height: 1.6;">
+                <div style="margin-bottom: 4px;">📈 <strong>Sale Records Sent:</strong> <span id="success-sale-sent">0</span></div>
+                <div style="margin-bottom: 4px;">🛒 <strong>Purchase Records Sent:</strong> <span id="success-purchase-sent">0</span></div>
+                <div id="success-skipped-container" style="border-top: 1px dashed var(--border-glass); margin-top: 8px; padding-top: 8px; font-size: 0.78rem; color: var(--text-muted);">
+                    ⏭️ <strong>Duplicates Skipped (Already in sheet):</strong><br>
+                    Sale: <span id="success-sale-skipped">0</span>, Purchase: <span id="success-purchase-skipped">0</span>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="closeSuccessModal()" style="width: 100%; justify-content: center;">Awesome!</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

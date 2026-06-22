@@ -1,0 +1,16 @@
+# Compiled Python files
+__pycache__/
+*.pyc
+
+# Local Data / Cache
+processed_data_store.pkl
+processed_data.pkl
+
+# Large Excel Source files (User's data files)
+*.xls
+*.xlsx
+
+# Virtual environments
+venv/
+.venv/
+env/

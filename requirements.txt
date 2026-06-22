@@ -1,0 +1,6 @@
+flask
+xlrd
+openpyxl
+pandas
+requests
+gunicorn
