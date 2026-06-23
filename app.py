@@ -723,12 +723,8 @@ def _fetch_and_store_google_sheet_to_sqlite():
                 res_csv = requests.get(csv_url, timeout=60, stream=True)
                 if res_csv.status_code == 200:
                     # Decode streaming content line by line
-                    text_content = res_csv.text
-                    reader = csv.reader(io.StringIO(text_content))
-                    
-                    # Free raw response immediately
-                    res_csv.close()
-                    del res_csv
+                    lines = (line.decode('utf-8') for line in res_csv.iter_lines() if line)
+                    reader = csv.reader(lines)
                     
                     sheet_count = 0
                     batch = []
@@ -774,8 +770,8 @@ def _fetch_and_store_google_sheet_to_sqlite():
                     total_keys += sheet_count
                     print(f"[CACHE SYNC] Loaded {sheet_count} keys from tab '{title}'", flush=True)
                     
-                    # Free CSV text immediately
-                    del text_content
+                    res_csv.close()
+                    del res_csv
                     gc.collect()
                 else:
                     print(f"[CACHE SYNC ERROR] Failed to fetch tab '{title}'. Status: {res_csv.status_code}", flush=True)
