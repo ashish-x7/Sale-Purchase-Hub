@@ -633,17 +633,29 @@ def export_to_excel(sale_data, purchase_data, output_path):
 
 # ─── Routes ──────────────────────────────────────────────────────────
 
-# Cache storage for Google Sheet Sale-Purchase Quantities
+# Cache storage for Google Sheet Sale-Purchase Quantities (SQLite-based for low memory)
 import threading
 import re
 import csv
+import sqlite3
+import gc
 
-_sale_purchase_cache = {}
-_cache_lock = threading.Lock()
+_CACHE_DB_PATH = os.path.join(DATA_DIR, 'sale_cache.db')
 _cache_loaded_event = threading.Event()
 _is_cache_loading = False
 
-def _fetch_google_sheet_data_via_csv():
+def _init_cache_db():
+    """Initialize the SQLite cache database."""
+    conn = sqlite3.connect(_CACHE_DB_PATH)
+    conn.execute("CREATE TABLE IF NOT EXISTS sale_cache (key TEXT PRIMARY KEY, qty REAL)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_key ON sale_cache(key)")
+    conn.commit()
+    conn.close()
+
+_init_cache_db()
+
+def _fetch_and_store_google_sheet_to_sqlite():
+    """Download Google Sheet CSV data and store directly into SQLite (low memory)."""
     spreadsheet_id = "1xXR4gfDPN-0A1B8gaY7kcW52gr4uRjfJ-TmafuJr6To"
     edit_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
     
@@ -651,7 +663,7 @@ def _fetch_google_sheet_data_via_csv():
         res = requests.get(edit_url, timeout=30)
         if res.status_code != 200:
             print(f"[CACHE SYNC ERROR] Failed to fetch edit page. Status: {res.status_code}", flush=True)
-            return None
+            return False
             
         html = res.text
         match = re.search(r'bootstrapData\s*=\s*({.+?});', html)
@@ -683,12 +695,21 @@ def _fetch_google_sheet_data_via_csv():
                                             sheets.append((gid, title))
             except Exception as e:
                 print(f"[CACHE SYNC ERROR] Parsing bootstrapData failed: {str(e)}", flush=True)
+        
+        # Free the HTML string immediately
+        del html, res
+        gc.collect()
                 
         if not sheets:
-            # Fallback sheet gids/titles we know are active
             sheets = [("0", "AJ&MY&FK SALE-PURCHASE 2025-26"), ("1563945167", "AJ&MY&FK SALE-PURCHASE 2026-27")]
-            
-        mapping = {}
+        
+        # Use a temporary DB, then swap atomically
+        temp_db_path = _CACHE_DB_PATH + '.tmp'
+        conn = sqlite3.connect(temp_db_path)
+        conn.execute("DROP TABLE IF EXISTS sale_cache")
+        conn.execute("CREATE TABLE sale_cache (key TEXT PRIMARY KEY, qty REAL)")
+        
+        total_keys = 0
         for gid, title in sheets:
             title_upper = title.upper()
             if any(x in title_upper for x in ["DASHBOARD", "SUMMARY", "CONFIG", "INSTRUCTION", "LIMIT", "USER", "PART", "REPORT", "WELCOME"]):
@@ -698,16 +719,22 @@ def _fetch_google_sheet_data_via_csv():
             print(f"[CACHE SYNC] Downloading CSV for tab '{title}' (GID {gid})...", flush=True)
             
             try:
-                res_csv = requests.get(csv_url, timeout=30)
+                # Stream the CSV to avoid loading entire response into memory
+                res_csv = requests.get(csv_url, timeout=60, stream=True)
                 if res_csv.status_code == 200:
-                    reader = csv.reader(io.StringIO(res_csv.text))
-                    rows = list(reader)
-                    if len(rows) < 3:
-                        continue
+                    # Decode streaming content line by line
+                    text_content = res_csv.text
+                    reader = csv.reader(io.StringIO(text_content))
+                    
+                    # Free raw response immediately
+                    res_csv.close()
+                    del res_csv
                     
                     sheet_count = 0
-                    for r_idx in range(2, len(rows)):
-                        row = rows[r_idx]
+                    batch = []
+                    for r_idx, row in enumerate(reader):
+                        if r_idx < 2:  # Skip header rows
+                            continue
                         if len(row) < 28:
                             continue
                             
@@ -729,32 +756,72 @@ def _fetch_google_sheet_data_via_csv():
                                 qty = float(qty_val) if qty_val else 0
                             except ValueError:
                                 qty = 0
-                            mapping[norm_key] = qty
+                            batch.append((norm_key, qty))
                             sheet_count += 1
+                            
+                            # Insert in batches of 5000 to keep memory low
+                            if len(batch) >= 5000:
+                                conn.executemany("INSERT OR REPLACE INTO sale_cache (key, qty) VALUES (?, ?)", batch)
+                                conn.commit()
+                                batch = []
+                    
+                    # Insert remaining batch
+                    if batch:
+                        conn.executemany("INSERT OR REPLACE INTO sale_cache (key, qty) VALUES (?, ?)", batch)
+                        conn.commit()
+                        batch = []
+                    
+                    total_keys += sheet_count
                     print(f"[CACHE SYNC] Loaded {sheet_count} keys from tab '{title}'", flush=True)
+                    
+                    # Free CSV text immediately
+                    del text_content
+                    gc.collect()
                 else:
                     print(f"[CACHE SYNC ERROR] Failed to fetch tab '{title}'. Status: {res_csv.status_code}", flush=True)
             except Exception as ex:
                 print(f"[CACHE SYNC ERROR] Error loading tab '{title}': {str(ex)}", flush=True)
-                
-        return mapping
+        
+        # Create index and close
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_key ON sale_cache(key)")
+        conn.commit()
+        conn.close()
+        
+        # Atomically swap temp DB to main DB
+        if os.path.exists(_CACHE_DB_PATH):
+            os.remove(_CACHE_DB_PATH)
+        os.rename(temp_db_path, _CACHE_DB_PATH)
+        
+        gc.collect()
+        return total_keys > 0
     except Exception as e:
         print(f"[CACHE SYNC ERROR] Global sheet load failed: {str(e)}", flush=True)
-        return None
+        traceback.print_exc()
+        # Clean up temp file
+        temp_db_path = _CACHE_DB_PATH + '.tmp'
+        if os.path.exists(temp_db_path):
+            try: os.remove(temp_db_path)
+            except: pass
+        return False
 
 def _load_cache_safely():
-    global _sale_purchase_cache, _is_cache_loading
+    global _is_cache_loading
     if _is_cache_loading:
         return
     try:
         _is_cache_loading = True
         print("[CACHE SYNC] Starting background sync from Google Sheets...", flush=True)
-        new_mapping = _fetch_google_sheet_data_via_csv()
-        if new_mapping:
-            with _cache_lock:
-                _sale_purchase_cache = new_mapping
+        success = _fetch_and_store_google_sheet_to_sqlite()
+        if success:
             _cache_loaded_event.set()
-            print(f"[CACHE SYNC SUCCESS] Cache updated with {len(new_mapping)} keys.", flush=True)
+            # Count keys in DB
+            try:
+                conn = sqlite3.connect(_CACHE_DB_PATH)
+                count = conn.execute("SELECT COUNT(*) FROM sale_cache").fetchone()[0]
+                conn.close()
+                print(f"[CACHE SYNC SUCCESS] SQLite cache updated with {count} keys.", flush=True)
+            except:
+                print("[CACHE SYNC SUCCESS] SQLite cache updated.", flush=True)
         else:
             print("[CACHE SYNC WARNING] Failed to load data, keeping previous cache.", flush=True)
     except Exception as e:
@@ -795,37 +862,55 @@ def lookup_sale_quantities():
             response.headers.add("Access-Control-Allow-Origin", "*")
             return response, 400
 
-        # Wait for the initial cache load to complete (up to 45 seconds if empty)
-        print(f"[LOOKUP] Cache loaded status: {_cache_loaded_event.is_set()}", flush=True)
+        # Wait for the initial cache load to complete (up to 90 seconds if empty)
         if not _cache_loaded_event.is_set():
             print("[LOOKUP] Cache not loaded yet, waiting for initial sync...", flush=True)
-            _cache_loaded_event.wait(timeout=45)
-            print(f"[LOOKUP] Wait complete! Status: {_cache_loaded_event.is_set()}", flush=True)
+            _cache_loaded_event.wait(timeout=90)
+            if not _cache_loaded_event.is_set():
+                print("[LOOKUP] Cache still not loaded after 90s!", flush=True)
 
-        print("[LOOKUP] Acquiring cache lock...", flush=True)
-        with _cache_lock:
-            db_mapping = dict(_sale_purchase_cache)
-        print(f"[LOOKUP] Cache lock released! Mapping keys count: {len(db_mapping)}", flush=True)
+        # Query SQLite directly — very low memory usage
+        mapping = {}
+        try:
+            conn = sqlite3.connect(_CACHE_DB_PATH)
+            # Query in batches to keep memory low
+            norm_keys = [(str(k).strip().upper(),) for k in keys]
+            # Use parameterized query with IN clause (batch of 500)
+            for i in range(0, len(norm_keys), 500):
+                batch = norm_keys[i:i+500]
+                placeholders = ','.join(['?' for _ in batch])
+                query = f"SELECT key, qty FROM sale_cache WHERE key IN ({placeholders})"
+                results = conn.execute(query, [k[0] for k in batch]).fetchall()
+                for db_key, db_qty in results:
+                    # Find the original key (preserve case)
+                    for orig_key in keys:
+                        if str(orig_key).strip().upper() == db_key:
+                            mapping[orig_key] = db_qty
+                            break
+            conn.close()
+        except Exception as db_err:
+            print(f"[LOOKUP] SQLite query error: {str(db_err)}", flush=True)
 
         # Merge with locally uploaded data from processed_data_store.pkl (if any)
         try:
             stored = load_stored_data()
             sale_rows = stored.get('sale', [])
+            uploaded_mapping = {}
             for row in sale_rows:
                 uid = row.get('sale_unique_id')
                 if uid:
                     uid_str = str(uid).strip().upper()
-                    db_mapping[uid_str] = row.get('calc_qty', row.get('quantity', 0))
+                    uploaded_mapping[uid_str] = row.get('calc_qty', row.get('quantity', 0))
+            # Check uploaded data for any keys not found in SQLite
+            for key in keys:
+                if key not in mapping:
+                    norm_key = str(key).strip().upper()
+                    if norm_key in uploaded_mapping:
+                        mapping[key] = uploaded_mapping[norm_key]
         except Exception:
             pass
 
-        # Match keys
-        mapping = {}
-        for key in keys:
-            norm_key = str(key).strip().upper()
-            if norm_key in db_mapping:
-                mapping[key] = db_mapping[norm_key]
-
+        print(f"[LOOKUP] Found {len(mapping)} matches out of {len(keys)} keys.", flush=True)
         response = jsonify({"status": "Success", "mapping": mapping})
         response.headers.add("Access-Control-Allow-Origin", "*")
         return response
