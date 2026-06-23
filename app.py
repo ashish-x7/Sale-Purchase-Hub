@@ -3,24 +3,39 @@ import math
 import json
 import traceback
 import pickle
+import tempfile
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_file
 import xlrd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-import pandas as pd
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max upload
+app.config['MAX_CONTENT_LENGTH'] = 250 * 1024 * 1024  # 250MB max upload
 
 # ─── Persistent Data Storage ────────────────────────────────────────────────
 # Store data in the workspace folder so it persists between restarts
 WORKSPACE = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_FOLDER = os.path.join(WORKSPACE, 'uploads')
+DATA_DIR = os.environ.get('DATA_DIR')
+if not DATA_DIR:
+    DATA_DIR = os.path.join(tempfile.gettempdir(), 'sale_purchase_hub') if os.environ.get('RENDER') else WORKSPACE
+
+UPLOAD_FOLDER = os.path.join(DATA_DIR, 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-DATA_STORE_PATH = os.path.join(WORKSPACE, 'processed_data_store.pkl')
+DATA_STORE_PATH = os.path.join(DATA_DIR, 'processed_data_store.pkl')
+
+
+@app.errorhandler(413)
+def request_too_large(error):
+    return jsonify({'error': 'Uploaded files are too large. Please reduce file size or upload smaller files.'}), 413
+
+
+@app.errorhandler(500)
+def internal_server_error(error):
+    traceback.print_exc()
+    return jsonify({'error': 'Server error while processing. Please try again; if it repeats, check Render logs.'}), 500
 
 
 def get_financial_year():
@@ -714,11 +729,7 @@ def upload_files():
         }
         save_stored_data(stored_data)
         
-        # Also save to temp for export
-        data_path = os.path.join(app.config['UPLOAD_FOLDER'], 'processed_data.pkl')
-        with open(data_path, 'wb') as f:
-            pickle.dump((merged_sale, merged_purchase), f)
-        
+
         # Return preview (first 100 rows)
         preview_sale = merged_sale[:100]
         preview_purchase = merged_purchase[:100]
