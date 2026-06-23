@@ -806,6 +806,21 @@ def _load_cache_safely():
         return
     try:
         _is_cache_loading = True
+        
+        # Check if database already exists on disk and has records
+        has_existing_cache = False
+        if os.path.exists(_CACHE_DB_PATH):
+            try:
+                conn = sqlite3.connect(_CACHE_DB_PATH)
+                count = conn.execute("SELECT COUNT(*) FROM sale_cache").fetchone()[0]
+                conn.close()
+                if count > 0:
+                    print(f"[CACHE SYNC] Found existing SQLite cache on disk with {count} keys. Marking loaded immediately.", flush=True)
+                    _cache_loaded_event.set()
+                    has_existing_cache = True
+            except Exception as check_err:
+                print(f"[CACHE SYNC] Error checking existing cache: {str(check_err)}", flush=True)
+                
         print("[CACHE SYNC] Starting background sync from Google Sheets...", flush=True)
         success = _fetch_and_store_google_sheet_to_sqlite()
         if success:
@@ -820,9 +835,13 @@ def _load_cache_safely():
                 print("[CACHE SYNC SUCCESS] SQLite cache updated.", flush=True)
         else:
             print("[CACHE SYNC WARNING] Failed to load data, keeping previous cache.", flush=True)
+            if has_existing_cache:
+                _cache_loaded_event.set()
     except Exception as e:
         print(f"[CACHE SYNC ERROR] {str(e)}", flush=True)
         traceback.print_exc()
+        if has_existing_cache:
+            _cache_loaded_event.set()
     finally:
         _is_cache_loading = False
 
