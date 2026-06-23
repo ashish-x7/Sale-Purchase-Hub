@@ -41,6 +41,7 @@ def internal_server_error(error):
     return jsonify({'error': 'Server error while processing. Please try again; if it repeats, check Render logs.'}), 500
 
 
+
 def get_financial_year():
     """Get current financial year string like '2026-27'."""
     now = datetime.now()
@@ -633,62 +634,147 @@ def export_to_excel(sale_data, purchase_data, output_path):
 # ─── Routes ──────────────────────────────────────────────────────────
 
 # Cache storage for Google Sheet Sale-Purchase Quantities
-_sale_purchase_cache = None
-_last_cache_time = 0
-CACHE_DURATION = 300  # Cache for 5 minutes
+import threading
+import re
+import csv
 
-def get_sheet_quantities_cache():
-    global _sale_purchase_cache, _last_cache_time
-    current_time = time.time()
+_sale_purchase_cache = {}
+_cache_lock = threading.Lock()
+_cache_loaded_event = threading.Event()
+_is_cache_loading = False
+
+def _fetch_google_sheet_data_via_csv():
+    spreadsheet_id = "1xXR4gfDPN-0A1B8gaY7kcW52gr4uRjfJ-TmafuJr6To"
+    edit_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
     
-    if _sale_purchase_cache is not None and (current_time - _last_cache_time) < CACHE_DURATION:
-        return _sale_purchase_cache
-        
     try:
-        print("[CACHE SYNC] Fetching latest Google Sheet data...", flush=True)
-        spreadsheet_id = "1xXR4gfDPN-0A1B8gaY7kcW52gr4uRjfJ-TmafuJr6To"
-        url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=xlsx"
-        
-        res = requests.get(url, timeout=30)
+        res = requests.get(edit_url, timeout=30)
         if res.status_code != 200:
-            print(f"[CACHE SYNC ERROR] Failed to fetch. Status code: {res.status_code}", flush=True)
-            if _sale_purchase_cache is not None:
-                return _sale_purchase_cache
-            return {}
+            print(f"[CACHE SYNC ERROR] Failed to fetch edit page. Status: {res.status_code}", flush=True)
+            return None
             
-        wb = openpyxl.load_workbook(io.BytesIO(res.content), data_only=True)
+        html = res.text
+        match = re.search(r'bootstrapData\s*=\s*({.+?});', html)
+        if not match:
+            match = re.search(r'var\s+bootstrapData\s*=\s*({.+?});', html)
+            
+        sheets = []
+        if match:
+            try:
+                data = json.loads(match.group(1))
+                topsnapshot = data.get("changes", {}).get("topsnapshot", [])
+                for item in topsnapshot:
+                    if not isinstance(item, list) or len(item) < 2:
+                        continue
+                    payload_str = item[1]
+                    if isinstance(payload_str, str) and payload_str.startswith("["):
+                        inner = json.loads(payload_str)
+                        if isinstance(inner, list) and len(inner) >= 4:
+                            gid = str(inner[2])
+                            props_list = inner[3]
+                            if isinstance(props_list, list) and len(props_list) > 0:
+                                props_dict = props_list[0]
+                                if isinstance(props_dict, dict) and "1" in props_dict:
+                                    title_block = props_dict["1"]
+                                    if isinstance(title_block, list) and len(title_block) > 0:
+                                        title_info = title_block[0]
+                                        if isinstance(title_info, list) and len(title_info) >= 3:
+                                            title = title_info[2]
+                                            sheets.append((gid, title))
+            except Exception as e:
+                print(f"[CACHE SYNC ERROR] Parsing bootstrapData failed: {str(e)}", flush=True)
+                
+        if not sheets:
+            # Fallback sheet gids/titles we know are active
+            sheets = [("0", "AJ&MY&FK SALE-PURCHASE 2025-26"), ("1563945167", "AJ&MY&FK SALE-PURCHASE 2026-27")]
+            
         mapping = {}
-        
-        for sheet_name in wb.sheetnames:
-            sheet_upper = sheet_name.upper()
-            if any(x in sheet_upper for x in ["DASHBOARD", "SUMMARY", "CONFIG", "INSTRUCTION", "LIMIT", "USER", "PART", "REPORT", "WELCOME"]):
+        for gid, title in sheets:
+            title_upper = title.upper()
+            if any(x in title_upper for x in ["DASHBOARD", "SUMMARY", "CONFIG", "INSTRUCTION", "LIMIT", "USER", "PART", "REPORT", "WELCOME"]):
                 continue
                 
-            ws = wb[sheet_name]
-            max_row = ws.max_row
-            max_col = ws.max_column
-            if max_row <= 2 or max_col < 28:
-                continue
-                
-            for r in range(2, max_row + 1):
-                key_val = ws.cell(row=r, column=27).value
-                qty_val = ws.cell(row=r, column=28).value
-                
-                if key_val is not None:
-                    norm_key = str(key_val).strip().upper()
-                    if norm_key:
-                        mapping[norm_key] = qty_val if qty_val is not None else 0
+            csv_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=csv&gid={gid}"
+            print(f"[CACHE SYNC] Downloading CSV for tab '{title}' (GID {gid})...", flush=True)
+            
+            try:
+                res_csv = requests.get(csv_url, timeout=30)
+                if res_csv.status_code == 200:
+                    reader = csv.reader(io.StringIO(res_csv.text))
+                    rows = list(reader)
+                    if len(rows) < 3:
+                        continue
+                    
+                    sheet_count = 0
+                    for r_idx in range(2, len(rows)):
+                        row = rows[r_idx]
+                        if len(row) < 28:
+                            continue
+                            
+                        key_val = row[26].strip()
+                        qty_val = row[27].strip()
                         
-        _sale_purchase_cache = mapping
-        _last_cache_time = current_time
-        print(f"[CACHE SYNC SUCCESS] Loaded {len(mapping)} keys from Google Sheets.", flush=True)
+                        # Fallback key construction
+                        if not key_val:
+                            inv = row[1].strip()
+                            ord_id = row[7].strip()
+                            asin = row[8].strip()
+                            sku = row[9].strip()
+                            if inv and (ord_id or sku):
+                                key_val = f"{inv}-{ord_id}-{asin}-{sku}"
+                                
+                        if key_val:
+                            norm_key = key_val.strip().upper()
+                            try:
+                                qty = float(qty_val) if qty_val else 0
+                            except ValueError:
+                                qty = 0
+                            mapping[norm_key] = qty
+                            sheet_count += 1
+                    print(f"[CACHE SYNC] Loaded {sheet_count} keys from tab '{title}'", flush=True)
+                else:
+                    print(f"[CACHE SYNC ERROR] Failed to fetch tab '{title}'. Status: {res_csv.status_code}", flush=True)
+            except Exception as ex:
+                print(f"[CACHE SYNC ERROR] Error loading tab '{title}': {str(ex)}", flush=True)
+                
         return mapping
+    except Exception as e:
+        print(f"[CACHE SYNC ERROR] Global sheet load failed: {str(e)}", flush=True)
+        return None
+
+def _load_cache_safely():
+    global _sale_purchase_cache, _is_cache_loading
+    if _is_cache_loading:
+        return
+    try:
+        _is_cache_loading = True
+        print("[CACHE SYNC] Starting background sync from Google Sheets...", flush=True)
+        new_mapping = _fetch_google_sheet_data_via_csv()
+        if new_mapping:
+            with _cache_lock:
+                _sale_purchase_cache = new_mapping
+            _cache_loaded_event.set()
+            print(f"[CACHE SYNC SUCCESS] Cache updated with {len(new_mapping)} keys.", flush=True)
+        else:
+            print("[CACHE SYNC WARNING] Failed to load data, keeping previous cache.", flush=True)
     except Exception as e:
         print(f"[CACHE SYNC ERROR] {str(e)}", flush=True)
         traceback.print_exc()
-        if _sale_purchase_cache is not None:
-            return _sale_purchase_cache
-        return {}
+    finally:
+        _is_cache_loading = False
+
+def _background_cache_loader_loop():
+    _load_cache_safely()
+    while True:
+        time.sleep(600)  # Refresh every 10 minutes
+        _load_cache_safely()
+
+def start_background_cache_loader():
+    thread = threading.Thread(target=_background_cache_loader_loop, daemon=True)
+    thread.start()
+
+# Start background sync thread immediately on startup
+start_background_cache_loader()
 
 @app.route('/api/lookup-sale-quantities', methods=['POST', 'OPTIONS'])
 def lookup_sale_quantities():
@@ -700,18 +786,28 @@ def lookup_sale_quantities():
         return response
 
     try:
+        print("[LOOKUP] Received lookup request!", flush=True)
         req_data = request.get_json(force=True, silent=True) or {}
         keys = req_data.get('keys', [])
+        print(f"[LOOKUP] Keys count: {len(keys)}", flush=True)
         if not keys or not isinstance(keys, list):
             response = jsonify({"status": "Error", "message": "Invalid keys format"})
             response.headers.add("Access-Control-Allow-Origin", "*")
             return response, 400
 
-        # 1. Fetch from Google Sheet cache (Auto-refreshes every 5 mins)
-        google_mapping = get_sheet_quantities_cache()
-        db_mapping = dict(google_mapping)
+        # Wait for the initial cache load to complete (up to 45 seconds if empty)
+        print(f"[LOOKUP] Cache loaded status: {_cache_loaded_event.is_set()}", flush=True)
+        if not _cache_loaded_event.is_set():
+            print("[LOOKUP] Cache not loaded yet, waiting for initial sync...", flush=True)
+            _cache_loaded_event.wait(timeout=45)
+            print(f"[LOOKUP] Wait complete! Status: {_cache_loaded_event.is_set()}", flush=True)
 
-        # 2. Merge with locally uploaded data from processed_data_store.pkl (if any)
+        print("[LOOKUP] Acquiring cache lock...", flush=True)
+        with _cache_lock:
+            db_mapping = dict(_sale_purchase_cache)
+        print(f"[LOOKUP] Cache lock released! Mapping keys count: {len(db_mapping)}", flush=True)
+
+        # Merge with locally uploaded data from processed_data_store.pkl (if any)
         try:
             stored = load_stored_data()
             sale_rows = stored.get('sale', [])
@@ -1128,4 +1224,5 @@ def sync_sheet():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=True, use_reloader=False, threaded=True, port=port)
