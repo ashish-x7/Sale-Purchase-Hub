@@ -614,6 +614,51 @@ def export_to_excel(sale_data, purchase_data, output_path):
 
 # ─── Routes ──────────────────────────────────────────────────────────
 
+@app.route('/api/lookup-sale-quantities', methods=['POST', 'OPTIONS'])
+def lookup_sale_quantities():
+    if request.method == 'OPTIONS':
+        response = jsonify({"status": "Success"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+        return response
+
+    try:
+        req_data = request.json or {}
+        keys = req_data.get('keys', [])
+        if not keys or not isinstance(keys, list):
+            response = jsonify({"status": "Error", "message": "Invalid keys format"})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            return response, 400
+
+        # Load the stored data
+        stored = load_stored_data()
+        sale_rows = stored.get('sale', [])
+
+        # Build a fast mapping from sale_rows
+        db_mapping = {}
+        for row in sale_rows:
+            uid = row.get('sale_unique_id')
+            if uid:
+                uid_str = str(uid).strip().upper()
+                db_mapping[uid_str] = row.get('calc_qty', row.get('quantity', 0))
+
+        # Match keys
+        mapping = {}
+        for key in keys:
+            norm_key = str(key).strip().upper()
+            if norm_key in db_mapping:
+                mapping[key] = db_mapping[norm_key]
+
+        response = jsonify({"status": "Success", "mapping": mapping})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response
+    except Exception as e:
+        traceback.print_exc()
+        response = jsonify({"status": "Error", "message": str(e)})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
+
 @app.route('/')
 def index():
     return render_template('index.html')

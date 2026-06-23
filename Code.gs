@@ -19,6 +19,9 @@ function doGet(e) {
         var startRow = parseInt(e.parameter.startRow || 3);
         var numRows = parseInt(e.parameter.numRows || 100);
         result = getSheetData(e.parameter.sheetName, startRow, numRows);
+      } else if (action === 'searchSheetData') {
+        var maxResults = parseInt(e.parameter.maxResults || 500);
+        result = searchSheetData(e.parameter.sheetName, e.parameter.query || '', maxResults);
       } else if (action === 'clearSheetData') {
         result = clearSheetData(e.parameter.sheetName);
       } else if (action === 'getExistingUniqueIds') {
@@ -148,6 +151,64 @@ function getSheetData(sheetName, startRow, numRows) {
 }
 
 // ─── Get Existing UNIQUE IDs for Deduplication ──────────────────────────────
+// Search across all data rows in the selected sheet, not only the current page.
+function searchSheetData(sheetName, query, maxResults) {
+  try {
+    var ss = getSpreadsheet();
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return { success: false, error: 'Sheet not found: ' + sheetName };
+
+    var q = String(query || '').trim();
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+
+    if (lastRow === 0 || lastCol === 0) {
+      return { success: true, data: [], headers: [], totalRows: 0, totalMatches: 0 };
+    }
+
+    var headers = sheet.getRange(1, 1, Math.min(2, lastRow), lastCol).getValues();
+    if (!q) {
+      return { success: true, data: [], headers: headers, totalRows: Math.max(0, lastRow - 2), totalMatches: 0 };
+    }
+
+    var limit = Math.min(Math.max(parseInt(maxResults || 500), 1), 2000);
+    var dataRowCount = Math.max(0, lastRow - 2);
+    if (dataRowCount === 0) {
+      return { success: true, data: [], headers: headers, totalRows: 0, totalMatches: 0 };
+    }
+
+    var dataRange = sheet.getRange(3, 1, dataRowCount, lastCol);
+    var matches = dataRange.createTextFinder(q).matchCase(false).findAll();
+    var rowMap = {};
+
+    for (var i = 0; i < matches.length; i++) {
+      var rowNumber = matches[i].getRow();
+      if (rowNumber >= 3) rowMap[rowNumber] = true;
+    }
+
+    var rowNumbers = Object.keys(rowMap).map(function(n) { return parseInt(n, 10); }).sort(function(a, b) { return a - b; });
+    var data = [];
+    var capped = rowNumbers.length > limit;
+
+    for (var r = 0; r < rowNumbers.length && r < limit; r++) {
+      data.push(sheet.getRange(rowNumbers[r], 1, 1, lastCol).getValues()[0]);
+    }
+
+    return {
+      success: true,
+      headers: headers,
+      data: data,
+      totalRows: dataRowCount,
+      totalMatches: rowNumbers.length,
+      returnedRows: data.length,
+      limited: capped,
+      sheetName: sheetName
+    };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
 function getExistingUniqueIds(sheetName) {
   try {
     var ss = getSpreadsheet();

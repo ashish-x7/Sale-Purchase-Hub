@@ -18,6 +18,7 @@ const state = {
     selectedSheet: '',
     viewerHeaders: [], viewerRows: [], viewerAllRows: [],
     viewerStartRow: 3, viewerPageSize: 25, viewerTotalRows: 0,
+    searchTimer: null, searchToken: 0,
 };
 
 // ─── DOM ────────────────────────────────────────────────────────────────
@@ -426,12 +427,14 @@ function onSheetSelectionChange() {
 function onSheetRowsChange() {
     const v = parseInt(document.getElementById('sheet-rows-per-page').value);
     state.viewerPageSize = v;
-    if (state.selectedSheet) loadSheetData(3);
+    if (document.getElementById('universal-search').value.trim()) runUniversalSearch();
+    else if (state.selectedSheet) loadSheetData(3);
 }
 
 // ─── Load Sheet Data ────────────────────────────────────────────────────
 async function loadSheetData(startRow) {
     if (!state.selectedSheet) return;
+    state.searchToken++;
     state.viewerStartRow = startRow;
     showGlobalLoader('Loading Sheet', `Fetching from ${state.selectedSheet}...`);
 
@@ -490,6 +493,19 @@ function renderViewerTable() {
     document.getElementById('next-btn').disabled = (endRow >= state.viewerTotalRows + 2);
 }
 
+function renderViewerSearchResults(totalMatches, returnedRows, limited) {
+    renderViewerTable();
+    document.getElementById('page-info').textContent = `Search`;
+    document.getElementById('prev-btn').disabled = true;
+    document.getElementById('next-btn').disabled = true;
+
+    const shown = formatNumber(returnedRows || state.viewerRows.length);
+    const total = formatNumber(totalMatches || 0);
+    document.getElementById('viewer-total-info').textContent = limited
+        ? `Search: showing ${shown} of ${total} matches`
+        : `Search: ${total} match${totalMatches !== 1 ? 'es' : ''} found`;
+}
+
 function changePage(dir) {
     let next = state.viewerStartRow + (dir * state.viewerPageSize);
     if (next < 3) next = 3;
@@ -508,33 +524,47 @@ function clearViewerTable() {
 
 // ─── Universal Search ───────────────────────────────────────────────────
 function handleUniversalSearch() {
-    const q = document.getElementById('universal-search').value.trim().toLowerCase();
-    const tbody = document.getElementById('viewer-tbody');
-    const rows = tbody.querySelectorAll('tr');
+    clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(runUniversalSearch, 350);
+}
+
+async function runUniversalSearch() {
+    const input = document.getElementById('universal-search');
+    const q = input.value.trim();
 
     if (!q) {
-        rows.forEach(r => { r.classList.remove('search-hidden','search-match'); });
+        if (state.selectedSheet) loadSheetData(state.viewerStartRow || 3);
+        return;
+    }
+    if (!state.selectedSheet) {
+        showToast('⚠️', 'Select a sheet first');
         return;
     }
 
-    let matchCount = 0;
-    rows.forEach(row => {
-        const cells = row.querySelectorAll('td');
-        let found = false;
-        cells.forEach(cell => {
-            if (cell.textContent.toLowerCase().includes(q)) found = true;
-        });
-        if (found) {
-            row.classList.remove('search-hidden');
-            row.classList.add('search-match');
-            matchCount++;
-        } else {
-            row.classList.add('search-hidden');
-            row.classList.remove('search-match');
-        }
-    });
+    const token = ++state.searchToken;
+    document.getElementById('viewer-total-info').textContent = 'Searching full sheet...';
+    document.getElementById('prev-btn').disabled = true;
+    document.getElementById('next-btn').disabled = true;
 
-    document.getElementById('viewer-total-info').textContent = `Search: ${matchCount} match${matchCount!==1?'es':''} found`;
+    try {
+        const maxResults = 1000;
+        const url = `${WEB_APP_URL}?action=searchSheetData&sheetName=${encodeURIComponent(state.selectedSheet)}&query=${encodeURIComponent(q)}&maxResults=${maxResults}`;
+        const res = await fetch(url);
+        const r = await res.json();
+        if (token !== state.searchToken) return;
+
+        if (r.success) {
+            state.viewerHeaders = r.headers || [];
+            state.viewerRows = r.data || [];
+            state.viewerAllRows = r.data || [];
+            state.viewerTotalRows = r.totalRows || 0;
+            renderViewerSearchResults(r.totalMatches || 0, r.returnedRows || state.viewerRows.length, !!r.limited);
+        } else {
+            showToast('❌', 'Search Error: ' + r.error);
+        }
+    } catch(e) {
+        if (token === state.searchToken) showToast('❌', 'Search network error');
+    }
 }
 
 // ─── Clear Sheet ────────────────────────────────────────────────────────
@@ -698,3 +728,20 @@ function showToast(icon, msg) {
     clearTimeout(window._tt);
     window._tt = setTimeout(() => t.classList.add('hidden'), 5000);
 }
+
+Object.assign(window, {
+    clearAllData,
+    closeModal,
+    confirmClearData,
+    onSheetSelectionChange,
+    onSheetRowsChange,
+    loadSheetData,
+    handleUniversalSearch,
+    triggerClearSheetWarning,
+    changePage,
+    startSyncToGoogleSheets,
+    closeSyncModal,
+    confirmClearSheet,
+    closeClearSheetModal,
+    closeSuccessModal,
+});
