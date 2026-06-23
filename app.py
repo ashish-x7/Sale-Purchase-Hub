@@ -639,7 +639,7 @@ def lookup_sale_quantities():
         return response
 
     try:
-        req_data = request.json or {}
+        req_data = request.get_json(force=True, silent=True) or {}
         keys = req_data.get('keys', [])
         if not keys or not isinstance(keys, list):
             response = jsonify({"status": "Error", "message": "Invalid keys format"})
