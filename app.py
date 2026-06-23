@@ -1,9 +1,12 @@
 import os
+import io
+import time
 import math
 import json
 import traceback
 import pickle
 import tempfile
+import requests
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_file
 import xlrd
@@ -629,6 +632,64 @@ def export_to_excel(sale_data, purchase_data, output_path):
 
 # ─── Routes ──────────────────────────────────────────────────────────
 
+# Cache storage for Google Sheet Sale-Purchase Quantities
+_sale_purchase_cache = None
+_last_cache_time = 0
+CACHE_DURATION = 300  # Cache for 5 minutes
+
+def get_sheet_quantities_cache():
+    global _sale_purchase_cache, _last_cache_time
+    current_time = time.time()
+    
+    if _sale_purchase_cache is not None and (current_time - _last_cache_time) < CACHE_DURATION:
+        return _sale_purchase_cache
+        
+    try:
+        print("[CACHE SYNC] Fetching latest Google Sheet data...", flush=True)
+        spreadsheet_id = "1xXR4gfDPN-0A1B8gaY7kcW52gr4uRjfJ-TmafuJr6To"
+        url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=xlsx"
+        
+        res = requests.get(url, timeout=30)
+        if res.status_code != 200:
+            print(f"[CACHE SYNC ERROR] Failed to fetch. Status code: {res.status_code}", flush=True)
+            if _sale_purchase_cache is not None:
+                return _sale_purchase_cache
+            return {}
+            
+        wb = openpyxl.load_workbook(io.BytesIO(res.content), data_only=True)
+        mapping = {}
+        
+        for sheet_name in wb.sheetnames:
+            sheet_upper = sheet_name.upper()
+            if any(x in sheet_upper for x in ["DASHBOARD", "SUMMARY", "CONFIG", "INSTRUCTION", "LIMIT", "USER", "PART", "REPORT", "WELCOME"]):
+                continue
+                
+            ws = wb[sheet_name]
+            max_row = ws.max_row
+            max_col = ws.max_column
+            if max_row <= 2 or max_col < 28:
+                continue
+                
+            for r in range(2, max_row + 1):
+                key_val = ws.cell(row=r, column=27).value
+                qty_val = ws.cell(row=r, column=28).value
+                
+                if key_val is not None:
+                    norm_key = str(key_val).strip().upper()
+                    if norm_key:
+                        mapping[norm_key] = qty_val if qty_val is not None else 0
+                        
+        _sale_purchase_cache = mapping
+        _last_cache_time = current_time
+        print(f"[CACHE SYNC SUCCESS] Loaded {len(mapping)} keys from Google Sheets.", flush=True)
+        return mapping
+    except Exception as e:
+        print(f"[CACHE SYNC ERROR] {str(e)}", flush=True)
+        traceback.print_exc()
+        if _sale_purchase_cache is not None:
+            return _sale_purchase_cache
+        return {}
+
 @app.route('/api/lookup-sale-quantities', methods=['POST', 'OPTIONS'])
 def lookup_sale_quantities():
     if request.method == 'OPTIONS':
@@ -646,17 +707,21 @@ def lookup_sale_quantities():
             response.headers.add("Access-Control-Allow-Origin", "*")
             return response, 400
 
-        # Load the stored data
-        stored = load_stored_data()
-        sale_rows = stored.get('sale', [])
+        # 1. Fetch from Google Sheet cache (Auto-refreshes every 5 mins)
+        google_mapping = get_sheet_quantities_cache()
+        db_mapping = dict(google_mapping)
 
-        # Build a fast mapping from sale_rows
-        db_mapping = {}
-        for row in sale_rows:
-            uid = row.get('sale_unique_id')
-            if uid:
-                uid_str = str(uid).strip().upper()
-                db_mapping[uid_str] = row.get('calc_qty', row.get('quantity', 0))
+        # 2. Merge with locally uploaded data from processed_data_store.pkl (if any)
+        try:
+            stored = load_stored_data()
+            sale_rows = stored.get('sale', [])
+            for row in sale_rows:
+                uid = row.get('sale_unique_id')
+                if uid:
+                    uid_str = str(uid).strip().upper()
+                    db_mapping[uid_str] = row.get('calc_qty', row.get('quantity', 0))
+        except Exception:
+            pass
 
         # Match keys
         mapping = {}
