@@ -851,12 +851,20 @@ def _background_cache_loader_loop():
         time.sleep(600)  # Refresh every 10 minutes
         _load_cache_safely()
 
-def start_background_cache_loader():
-    thread = threading.Thread(target=_background_cache_loader_loop, daemon=True)
-    thread.start()
+_cache_loader_started = False
+_cache_loader_lock = threading.Lock()
 
-# Start background sync thread immediately on startup
-start_background_cache_loader()
+def start_background_cache_loader():
+    global _cache_loader_started
+    if _cache_loader_started:
+        return
+    with _cache_loader_lock:
+        if _cache_loader_started:
+            return
+        print("[CACHE LOADER] Starting background cache loader thread...", flush=True)
+        thread = threading.Thread(target=_background_cache_loader_loop, daemon=True)
+        thread.start()
+        _cache_loader_started = True
 
 @app.route('/api/lookup-sale-quantities', methods=['POST', 'OPTIONS'])
 def lookup_sale_quantities():
@@ -868,6 +876,9 @@ def lookup_sale_quantities():
         return response
 
     try:
+        # Start background sync thread inside Gunicorn worker process lazily on first request
+        start_background_cache_loader()
+        
         print("[LOOKUP] Received lookup request!", flush=True)
         req_data = request.get_json(force=True, silent=True) or {}
         keys = req_data.get('keys', [])
