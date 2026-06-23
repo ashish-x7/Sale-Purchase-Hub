@@ -291,8 +291,8 @@ def process_files(sale_details_path, sale_summary_path, purchase_details_path, p
         item_asin = safe_str(row.get('Item Asin', ''))
         item_sku = safe_str(row.get('Item SKU', ''))
         
-        # SALE UNIQUE ID = InvoiceNo - OrderID - ItemSKU
-        sale_unique_id = f'{invoice_no}-{order_id}-{item_sku}'
+        # SALE UNIQUE ID = InvoiceNo - OrderID - ItemAsin - ItemSKU
+        sale_unique_id = f'{invoice_no}-{order_id}-{item_asin}-{item_sku}'
         
         # State code
         state_code_full = summary.get('state_code', '')
