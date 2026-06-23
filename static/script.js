@@ -117,7 +117,13 @@ processBtn.addEventListener('click', async () => {
     try {
         const res = await fetch('/upload', { method:'POST', body:fd });
         clearInterval(iv);
-        const data = await res.json();
+        const raw = await res.text();
+        let data;
+        try {
+            data = JSON.parse(raw);
+        } catch(parseErr) {
+            throw new Error(raw ? `Server returned invalid response: ${raw.slice(0, 200)}` : 'Server returned an empty response');
+        }
         if (!res.ok || data.error) throw new Error(data.error || 'Upload failed');
 
         progressFill.style.width = '100%';
@@ -279,6 +285,13 @@ async function confirmClearData() {
             state.saleData=[]; state.purchaseData=[];
             state.saleTotal=0; state.purchaseTotal=0;
             state.saleOffset=0; state.purchaseOffset=0;
+            document.getElementById('sale-count').textContent = '0';
+            document.getElementById('purchase-count').textContent = '0';
+            document.getElementById('total-count').textContent = '0';
+            document.getElementById('table-head').innerHTML = '';
+            document.getElementById('table-body').innerHTML = '';
+            document.getElementById('showing-info').textContent = 'Showing 0 rows';
+            document.getElementById('load-more-btn').classList.add('hidden');
             resultSection.classList.add('hidden');
             document.getElementById('header-status').classList.add('hidden');
             showToast('✅', 'All data cleared!');

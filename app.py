@@ -1,7 +1,6 @@
 import os
 import math
 import json
-import tempfile
 import traceback
 import pickle
 from datetime import datetime
@@ -14,12 +13,13 @@ import pandas as pd
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max upload
-UPLOAD_FOLDER = tempfile.mkdtemp()
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # ─── Persistent Data Storage ────────────────────────────────────────────────
 # Store data in the workspace folder so it persists between restarts
 WORKSPACE = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(WORKSPACE, 'uploads')
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 DATA_STORE_PATH = os.path.join(WORKSPACE, 'processed_data_store.pkl')
 
 
@@ -37,7 +37,7 @@ def load_stored_data():
     if os.path.exists(DATA_STORE_PATH):
         try:
             with open(DATA_STORE_PATH, 'rb') as f:
-                return pickle.load(f)
+                return normalize_stored_data(pickle.load(f))
         except Exception:
             pass
     return {'sale': [], 'purchase': [], 'sale_ids': set(), 'purchase_ids': set()}
@@ -46,7 +46,45 @@ def load_stored_data():
 def save_stored_data(data):
     """Save data to disk for persistence."""
     with open(DATA_STORE_PATH, 'wb') as f:
-        pickle.dump(data, f)
+        pickle.dump(normalize_stored_data(data), f)
+
+
+def clean_json_value(value):
+    """Return a value that can be safely serialized as strict JSON."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else 0
+    if isinstance(value, dict):
+        return {k: clean_json_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [clean_json_value(v) for v in value]
+    return value
+
+
+def clean_rows(rows):
+    return [clean_json_value(dict(row)) for row in rows]
+
+
+def normalize_stored_data(data):
+    """Normalize old/new pickle data into the current strict JSON-safe shape."""
+    if not isinstance(data, dict):
+        return {'sale': [], 'purchase': [], 'sale_ids': set(), 'purchase_ids': set()}
+
+    sale = clean_rows(data.get('sale', []))
+    purchase = clean_rows(data.get('purchase', []))
+    sale_ids = set(data.get('sale_ids') or [])
+    purchase_ids = set(data.get('purchase_ids') or [])
+
+    if not sale_ids:
+        sale_ids = {row.get('sale_unique_id') for row in sale if row.get('sale_unique_id')}
+    if not purchase_ids:
+        purchase_ids = {row.get('purchase_unique_id') for row in purchase if row.get('purchase_unique_id')}
+
+    return {
+        'sale': sale,
+        'purchase': purchase,
+        'sale_ids': sale_ids,
+        'purchase_ids': purchase_ids,
+    }
 
 
 def merge_with_dedup(existing_data, new_data, existing_ids, unique_id_key):
@@ -83,6 +121,8 @@ def roundup2(value):
         return 0
     try:
         v = float(value)
+        if not math.isfinite(v):
+            return 0
         return math.ceil(v * 100) / 100
     except (ValueError, TypeError):
         return 0
@@ -93,7 +133,8 @@ def safe_float(value, default=0):
     if value is None or value == '':
         return default
     try:
-        return float(value)
+        v = float(value)
+        return v if math.isfinite(v) else default
     except (ValueError, TypeError):
         return default
 
@@ -733,13 +774,20 @@ def status():
 def clear_data():
     """Clear all stored data (fresh start)."""
     try:
-        if os.path.exists(DATA_STORE_PATH):
-            os.remove(DATA_STORE_PATH)
+        empty_store = {'sale': [], 'purchase': [], 'sale_ids': set(), 'purchase_ids': set()}
+        save_stored_data(empty_store)
+
         data_path = os.path.join(app.config['UPLOAD_FOLDER'], 'processed_data.pkl')
-        if os.path.exists(data_path):
-            os.remove(data_path)
+        try:
+            if os.path.exists(data_path):
+                os.remove(data_path)
+        except OSError:
+            with open(data_path, 'wb') as f:
+                pickle.dump(([], []), f)
+
         return jsonify({'success': True, 'message': 'All data cleared!'})
     except Exception as e:
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
