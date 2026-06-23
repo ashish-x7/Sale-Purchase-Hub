@@ -75,7 +75,7 @@ def merge_with_dedup(existing_data, new_data, existing_ids, unique_id_key):
     
     return merged, merged_ids, new_count, dup_count
 
-# ─── Helpers ────────────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────
 
 def roundup2(value):
     """Round up to 2 decimal places (like Excel ROUNDUP)."""
@@ -211,7 +211,7 @@ def read_file(filepath):
         raise Exception(f'Unsupported file format: {ext}')
 
 
-# ─── LOOKUP Logic ───────────────────────────────────────────────────────────
+# ─── LOOKUP Logic ────────────────────────────────────────────────────────
 
 def build_sale_summary_lookup(sale_summary_rows, sale_summary_headers):
     """Build lookup dict from SALE SUMMARY keyed by New Invoice No."""
@@ -252,7 +252,7 @@ def build_purchase_summary_lookup(purchase_summary_rows, purchase_summary_header
     return lookup
 
 
-# ─── Main Processing ────────────────────────────────────────────────────────
+# ─── Main Processing ───────────────────────────────────────────────────────
 
 def process_files(sale_details_path, sale_summary_path, purchase_details_path, purchase_summary_path):
     """Process 4 files and generate combined data."""
@@ -291,7 +291,7 @@ def process_files(sale_details_path, sale_summary_path, purchase_details_path, p
         item_asin = safe_str(row.get('Item Asin', ''))
         item_sku = safe_str(row.get('Item SKU', ''))
         
-        # SALE UNIQUE ID = InvoiceNo & OrderID & ItemAsin & SKU
+        # SALE UNIQUE ID = InvoiceNo - OrderID - ItemSKU
         sale_unique_id = f'{invoice_no}-{order_id}-{item_sku}'
         
         # State code
@@ -391,8 +391,8 @@ def process_files(sale_details_path, sale_summary_path, purchase_details_path, p
         sgst_amt = safe_float(row.get('SGST Amt', 0))
         invoice_val = safe_float(row.get('Invoice', 0))
         
-        # PURCHASE UNIQUE ID = InvoiceNo & OrderID & ItemAsin & SKU
-        purchase_unique_id = f'{invoice_no}{order_id}{item_asin}{item_sku}'
+        # PURCHASE UNIQUE ID = InvoiceNo - OrderID - ItemAsin - ItemSKU (with "-" separator)
+        purchase_unique_id = f'{invoice_no}-{order_id}-{item_asin}-{item_sku}'
         
         # Duplicate calculated columns (Col 61-69)
         calc_qty = quantity  # Col 61
@@ -445,7 +445,7 @@ def process_files(sale_details_path, sale_summary_path, purchase_details_path, p
     return sale_processed, purchase_processed
 
 
-# ─── Excel Export ────────────────────────────────────────────────────────────
+# ─── Excel Export ────────────────────────────────────────────────────────
 
 def export_to_excel(sale_data, purchase_data, output_path):
     """Export combined data to Excel in the final format."""
@@ -571,7 +571,7 @@ def export_to_excel(sale_data, purchase_data, output_path):
     return output_path
 
 
-# ─── Routes ─────────────────────────────────────────────────────────────────
+# ─── Routes ──────────────────────────────────────────────────────────
 
 @app.route('/')
 def index():
