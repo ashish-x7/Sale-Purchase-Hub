@@ -654,7 +654,7 @@ def _init_cache_db():
             cursor.execute("PRAGMA table_info(sale_cache)")
             columns = [col[1] for col in cursor.fetchall()]
             conn.close()
-            if columns and 'rate' not in columns:
+            if columns and ('rate' not in columns or 'seller_name' not in columns):
                 print("[CACHE SYNC] Outdated SQLite schema detected. Deleting old DB to trigger fresh load.", flush=True)
                 try:
                     os.remove(_CACHE_DB_PATH)
@@ -664,7 +664,7 @@ def _init_cache_db():
             print(f"[CACHE SYNC] Error checking schema migration: {str(check_err)}", flush=True)
 
     conn = sqlite3.connect(_CACHE_DB_PATH)
-    conn.execute("CREATE TABLE IF NOT EXISTS sale_cache (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS sale_cache (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_key ON sale_cache(key)")
     conn.commit()
     conn.close()
@@ -725,7 +725,7 @@ def _fetch_and_store_google_sheet_to_sqlite():
         conn = sqlite3.connect(_CACHE_DB_PATH)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("DROP TABLE IF EXISTS sale_cache_new")
-        conn.execute("CREATE TABLE sale_cache_new (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT)")
+        conn.execute("CREATE TABLE sale_cache_new (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT)")
         conn.commit()
         
         total_keys = 0
@@ -757,6 +757,7 @@ def _fetch_and_store_google_sheet_to_sqlite():
                         qty_val = row[27].strip()
                         rate_val = row[28].strip() if len(row) > 28 else ""
                         state_val = row[37].strip() if len(row) > 37 else ""
+                        seller_name_val = row[4].strip() if len(row) > 4 else ""
                         
                         # Fallback key construction
                         if not key_val:
@@ -778,18 +779,18 @@ def _fetch_and_store_google_sheet_to_sqlite():
                             except ValueError:
                                 rate = 0
                             state = state_val.strip()
-                            batch.append((norm_key, qty, rate, state))
+                            batch.append((norm_key, qty, rate, state, seller_name_val))
                             sheet_count += 1
                             
                             # Insert in batches of 5000 to keep memory low
                             if len(batch) >= 5000:
-                                conn.executemany("INSERT OR REPLACE INTO sale_cache_new (key, qty, rate, state) VALUES (?, ?, ?, ?)", batch)
+                                conn.executemany("INSERT OR REPLACE INTO sale_cache_new (key, qty, rate, state, seller_name) VALUES (?, ?, ?, ?, ?)", batch)
                                 conn.commit()
                                 batch = []
                     
                     # Insert remaining batch
                     if batch:
-                        conn.executemany("INSERT OR REPLACE INTO sale_cache_new (key, qty, rate, state) VALUES (?, ?, ?, ?)", batch)
+                        conn.executemany("INSERT OR REPLACE INTO sale_cache_new (key, qty, rate, state, seller_name) VALUES (?, ?, ?, ?, ?)", batch)
                         conn.commit()
                         batch = []
                     
@@ -941,16 +942,17 @@ def lookup_sale_quantities():
             for i in range(0, len(norm_keys), 500):
                 batch = norm_keys[i:i+500]
                 placeholders = ','.join(['?' for _ in batch])
-                query = f"SELECT key, qty, rate, state FROM sale_cache WHERE key IN ({placeholders})"
+                query = f"SELECT key, qty, rate, state, seller_name FROM sale_cache WHERE key IN ({placeholders})"
                 results = conn.execute(query, [k[0] for k in batch]).fetchall()
-                for db_key, db_qty, db_rate, db_state in results:
+                for db_key, db_qty, db_rate, db_state, db_seller_name in results:
                     # Find the original key (preserve case)
                     for orig_key in keys:
                         if str(orig_key).strip().upper() == db_key:
                             mapping[orig_key] = {
                                 "qty": db_qty,
                                 "rate": db_rate,
-                                "state": db_state
+                                "state": db_state,
+                                "sellerName": db_seller_name
                             }
                             break
             conn.close()
@@ -969,7 +971,8 @@ def lookup_sale_quantities():
                     uploaded_mapping[uid_str] = {
                         "qty": row.get('calc_qty', row.get('quantity', 0)),
                         "rate": row.get('calc_cost', row.get('item_cost', 0)),
-                        "state": row.get('state_code_short', '')
+                        "state": row.get('state_code_short', ''),
+                        "sellerName": row.get('warehouse_name', '')
                     }
             # Check uploaded data for any keys not found in SQLite
             for key in keys:
