@@ -669,6 +669,7 @@ def _init_cache_db():
     conn.commit()
     conn.close()
 
+print("[DATABASE PATH] Resolving _CACHE_DB_PATH:", _CACHE_DB_PATH, flush=True)
 _init_cache_db()
 
 def _fetch_and_store_google_sheet_to_sqlite():
