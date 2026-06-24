@@ -720,11 +720,12 @@ def _fetch_and_store_google_sheet_to_sqlite():
         if not sheets:
             sheets = [("0", "AJ&MY&FK SALE-PURCHASE 2025-26"), ("1563945167", "AJ&MY&FK SALE-PURCHASE 2026-27")]
         
-        # Use a temporary DB, then swap atomically
-        temp_db_path = _CACHE_DB_PATH + '.tmp'
-        conn = sqlite3.connect(temp_db_path)
-        conn.execute("DROP TABLE IF EXISTS sale_cache")
-        conn.execute("CREATE TABLE sale_cache (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT)")
+        # Use a temporary table in the main database
+        conn = sqlite3.connect(_CACHE_DB_PATH)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("DROP TABLE IF EXISTS sale_cache_new")
+        conn.execute("CREATE TABLE sale_cache_new (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT)")
+        conn.commit()
         
         total_keys = 0
         for gid, title in sheets:
@@ -781,13 +782,13 @@ def _fetch_and_store_google_sheet_to_sqlite():
                             
                             # Insert in batches of 5000 to keep memory low
                             if len(batch) >= 5000:
-                                conn.executemany("INSERT OR REPLACE INTO sale_cache (key, qty, rate, state) VALUES (?, ?, ?, ?)", batch)
+                                conn.executemany("INSERT OR REPLACE INTO sale_cache_new (key, qty, rate, state) VALUES (?, ?, ?, ?)", batch)
                                 conn.commit()
                                 batch = []
                     
                     # Insert remaining batch
                     if batch:
-                        conn.executemany("INSERT OR REPLACE INTO sale_cache (key, qty, rate, state) VALUES (?, ?, ?, ?)", batch)
+                        conn.executemany("INSERT OR REPLACE INTO sale_cache_new (key, qty, rate, state) VALUES (?, ?, ?, ?)", batch)
                         conn.commit()
                         batch = []
                     
@@ -802,26 +803,36 @@ def _fetch_and_store_google_sheet_to_sqlite():
             except Exception as ex:
                 print(f"[CACHE SYNC ERROR] Error loading tab '{title}': {str(ex)}", flush=True)
         
-        # Create index and close
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_key ON sale_cache(key)")
+        # Create index on the temporary table
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_key_new ON sale_cache_new(key)")
         conn.commit()
-        conn.close()
         
-        # Atomically swap temp DB to main DB
-        if os.path.exists(_CACHE_DB_PATH):
-            os.remove(_CACHE_DB_PATH)
-        os.rename(temp_db_path, _CACHE_DB_PATH)
+        # Atomically swap table names
+        conn.execute("BEGIN TRANSACTION")
+        try:
+            conn.execute("DROP TABLE IF EXISTS sale_cache_old")
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sale_cache'")
+            if cursor.fetchone():
+                conn.execute("ALTER TABLE sale_cache RENAME TO sale_cache_old")
+            conn.execute("ALTER TABLE sale_cache_new RENAME TO sale_cache")
+            conn.execute("DROP TABLE IF EXISTS sale_cache_old")
+            conn.commit()
+        except Exception as swap_ex:
+            conn.rollback()
+            raise swap_ex
+        finally:
+            conn.close()
         
         gc.collect()
         return total_keys > 0
     except Exception as e:
         print(f"[CACHE SYNC ERROR] Global sheet load failed: {str(e)}", flush=True)
         traceback.print_exc()
-        # Clean up temp file
-        temp_db_path = _CACHE_DB_PATH + '.tmp'
-        if os.path.exists(temp_db_path):
-            try: os.remove(temp_db_path)
-            except: pass
+        try:
+            conn.close()
+        except:
+            pass
         return False
 
 def _load_cache_safely():
