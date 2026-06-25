@@ -666,6 +666,8 @@ def _init_cache_db():
     conn = sqlite3.connect(_CACHE_DB_PATH)
     conn.execute("CREATE TABLE IF NOT EXISTS sale_cache (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_key ON sale_cache(key)")
+    conn.execute("CREATE TABLE IF NOT EXISTS purchase_cache (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_key_purchase ON purchase_cache(key)")
     conn.commit()
     conn.close()
 
@@ -726,6 +728,8 @@ def _fetch_and_store_google_sheet_to_sqlite():
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("DROP TABLE IF EXISTS sale_cache_new")
         conn.execute("CREATE TABLE sale_cache_new (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT)")
+        conn.execute("DROP TABLE IF EXISTS purchase_cache_new")
+        conn.execute("CREATE TABLE purchase_cache_new (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT)")
         conn.commit()
         
         total_keys = 0
@@ -747,6 +751,7 @@ def _fetch_and_store_google_sheet_to_sqlite():
                     
                     sheet_count = 0
                     batch = []
+                    pur_batch = []
                     for r_idx, row in enumerate(reader):
                         if r_idx < 2:  # Skip header rows
                             continue
@@ -782,17 +787,39 @@ def _fetch_and_store_google_sheet_to_sqlite():
                             batch.append((norm_key, qty, rate, state, seller_name_val))
                             sheet_count += 1
                             
-                            # Insert in batches of 5000 to keep memory low
                             if len(batch) >= 5000:
                                 conn.executemany("INSERT OR REPLACE INTO sale_cache_new (key, qty, rate, state, seller_name) VALUES (?, ?, ?, ?, ?)", batch)
                                 conn.commit()
                                 batch = []
+                                
+                        pur_key_val = row[59].strip() if len(row) > 59 else ""
+                        if pur_key_val:
+                            pur_norm_key = pur_key_val.strip().upper()
+                            try:
+                                pur_qty = float(row[60].strip()) if len(row) > 60 and row[60].strip() else 0
+                            except ValueError:
+                                pur_qty = 0
+                            try:
+                                pur_rate = float(row[61].strip()) if len(row) > 61 and row[61].strip() else 0
+                            except ValueError:
+                                pur_rate = 0
+                            pur_seller_name_val = row[41].strip() if len(row) > 41 else ""
+                            pur_batch.append((pur_norm_key, pur_qty, pur_rate, "", pur_seller_name_val))
+                            
+                            if len(pur_batch) >= 5000:
+                                conn.executemany("INSERT OR REPLACE INTO purchase_cache_new (key, qty, rate, state, seller_name) VALUES (?, ?, ?, ?, ?)", pur_batch)
+                                conn.commit()
+                                pur_batch = []
                     
                     # Insert remaining batch
                     if batch:
                         conn.executemany("INSERT OR REPLACE INTO sale_cache_new (key, qty, rate, state, seller_name) VALUES (?, ?, ?, ?, ?)", batch)
                         conn.commit()
                         batch = []
+                    if pur_batch:
+                        conn.executemany("INSERT OR REPLACE INTO purchase_cache_new (key, qty, rate, state, seller_name) VALUES (?, ?, ?, ?, ?)", pur_batch)
+                        conn.commit()
+                        pur_batch = []
                     
                     total_keys += sheet_count
                     print(f"[CACHE SYNC] Loaded {sheet_count} keys from tab '{title}'", flush=True)
@@ -807,18 +834,26 @@ def _fetch_and_store_google_sheet_to_sqlite():
         
         # Create index on the temporary table
         conn.execute("CREATE INDEX IF NOT EXISTS idx_key_new ON sale_cache_new(key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_key_purchase_new ON purchase_cache_new(key)")
         conn.commit()
         
         # Atomically swap table names
         conn.execute("BEGIN TRANSACTION")
         try:
             conn.execute("DROP TABLE IF EXISTS sale_cache_old")
+            conn.execute("DROP TABLE IF EXISTS purchase_cache_old")
             cursor = conn.cursor()
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sale_cache'")
             if cursor.fetchone():
                 conn.execute("ALTER TABLE sale_cache RENAME TO sale_cache_old")
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='purchase_cache'")
+            if cursor.fetchone():
+                conn.execute("ALTER TABLE purchase_cache RENAME TO purchase_cache_old")
+            
             conn.execute("ALTER TABLE sale_cache_new RENAME TO sale_cache")
+            conn.execute("ALTER TABLE purchase_cache_new RENAME TO purchase_cache")
             conn.execute("DROP TABLE IF EXISTS sale_cache_old")
+            conn.execute("DROP TABLE IF EXISTS purchase_cache_old")
             conn.commit()
         except Exception as swap_ex:
             conn.rollback()
@@ -984,6 +1019,86 @@ def lookup_sale_quantities():
             pass
 
         print(f"[LOOKUP] Found {len(mapping)} matches out of {len(keys)} keys.", flush=True)
+        response = jsonify({"status": "Success", "mapping": mapping})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response
+    except Exception as e:
+        traceback.print_exc()
+        response = jsonify({"status": "Error", "message": str(e)})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
+
+@app.route('/api/lookup-purchase-quantities', methods=['POST', 'OPTIONS'])
+def lookup_purchase_quantities():
+    if request.method == 'OPTIONS':
+        response = jsonify({"status": "Success"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+        return response
+
+    try:
+        start_background_cache_loader()
+        
+        print("[LOOKUP PURCHASE] Received lookup request!", flush=True)
+        req_data = request.get_json(force=True, silent=True) or {}
+        keys = req_data.get('keys', [])
+        print(f"[LOOKUP PURCHASE] Keys count: {len(keys)}", flush=True)
+        if not keys or not isinstance(keys, list):
+            response = jsonify({"status": "Error", "message": "Invalid keys format"})
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            return response, 400
+
+        if not _cache_loaded_event.is_set():
+            print("[LOOKUP PURCHASE] Cache not loaded yet, waiting for initial sync...", flush=True)
+            _cache_loaded_event.wait(timeout=90)
+
+        mapping = {}
+        try:
+            conn = sqlite3.connect(_CACHE_DB_PATH)
+            norm_keys = [(str(k).strip().upper(),) for k in keys]
+            for i in range(0, len(norm_keys), 500):
+                batch = norm_keys[i:i+500]
+                placeholders = ','.join(['?' for _ in batch])
+                query = f"SELECT key, qty, rate, state, seller_name FROM purchase_cache WHERE key IN ({placeholders})"
+                results = conn.execute(query, [k[0] for k in batch]).fetchall()
+                for db_key, db_qty, db_rate, db_state, db_seller_name in results:
+                    for orig_key in keys:
+                        if str(orig_key).strip().upper() == db_key:
+                            mapping[orig_key] = {
+                                "qty": db_qty,
+                                "rate": db_rate,
+                                "state": db_state,
+                                "sellerName": db_seller_name
+                            }
+                            break
+            conn.close()
+        except Exception as db_err:
+            print(f"[LOOKUP PURCHASE] SQLite query error: {str(db_err)}", flush=True)
+
+        try:
+            stored = load_stored_data()
+            purchase_rows = stored.get('purchase', [])
+            uploaded_mapping = {}
+            for row in purchase_rows:
+                uid = row.get('purchase_unique_id')
+                if uid:
+                    uid_str = str(uid).strip().upper()
+                    uploaded_mapping[uid_str] = {
+                        "qty": row.get('calc_qty', row.get('quantity', 0)),
+                        "rate": row.get('calc_cost', row.get('item_cost', 0)),
+                        "state": row.get('state_code_short', ''),
+                        "sellerName": row.get('warehouse_name', '')
+                    }
+            for key in keys:
+                if key not in mapping:
+                    norm_key = str(key).strip().upper()
+                    if norm_key in uploaded_mapping:
+                        mapping[key] = uploaded_mapping[norm_key]
+        except Exception:
+            pass
+
+        print(f"[LOOKUP PURCHASE] Found {len(mapping)} matches out of {len(keys)} keys.", flush=True)
         response = jsonify({"status": "Success", "mapping": mapping})
         response.headers.add("Access-Control-Allow-Origin", "*")
         return response
