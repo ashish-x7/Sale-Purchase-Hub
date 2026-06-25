@@ -5,7 +5,7 @@
 
 // ─── CONFIGURATION ──────────────────────────────────────────────────────────
 // PASTE YOUR GOOGLE SHEET ID HERE (from the URL: docs.google.com/spreadsheets/d/THIS_PART/edit)
-const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID_HERE';
+const SPREADSHEET_ID = '1xXR4gfDPN-0A1B8gaY7kcW52gr4uRjfJ-TmafuJr6To';
 
 // ─── Web App Entry Point ────────────────────────────────────────────────────
 function doGet(e) {
