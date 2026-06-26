@@ -697,7 +697,7 @@ def _fetch_and_store_google_sheet_to_sqlite():
     edit_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
     
     try:
-        res = requests.get(edit_url, timeout=30)
+        res = requests.get(edit_url, timeout=120)
         if res.status_code != 200:
             print(f"[CACHE SYNC ERROR] Failed to fetch edit page. Status: {res.status_code}", flush=True)
             return False
@@ -776,7 +776,7 @@ def _fetch_and_store_google_sheet_to_sqlite():
             
             try:
                 # Stream the CSV to avoid loading entire response into memory
-                res_csv = requests.get(csv_url, timeout=60, stream=True)
+                res_csv = requests.get(csv_url, timeout=300, stream=True)
                 if res_csv.status_code == 200:
                     # Decode streaming content line by line
                     lines = (line.decode('utf-8') for line in res_csv.iter_lines() if line)
