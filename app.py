@@ -654,8 +654,8 @@ def _init_cache_db():
             cursor.execute("PRAGMA table_info(sale_cache)")
             columns = [col[1] for col in cursor.fetchall()]
             conn.close()
-            # Migrate if any new column like 'invoice_no' is missing
-            if columns and 'invoice_no' not in columns:
+            # Migrate if any new column like 'invoice_no' or 'igst_amt' is missing
+            if columns and ('invoice_no' not in columns or 'igst_amt' not in columns):
                 print("[CACHE SYNC] Outdated SQLite schema detected. Deleting old DB to trigger fresh load.", flush=True)
                 try:
                     os.remove(_CACHE_DB_PATH)
@@ -670,7 +670,8 @@ def _init_cache_db():
             key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT, sheet_name TEXT,
             invoice_no TEXT, invoice_date TEXT, warehouse_code TEXT, gst_no TEXT,
             order_id TEXT, item_asin TEXT, item_sku TEXT, item_name TEXT, hsn_number TEXT,
-            invoice_val REAL, reason TEXT, zoho_status TEXT, invoice_id TEXT
+            invoice_val REAL, reason TEXT, zoho_status TEXT, invoice_id TEXT,
+            gross REAL, igst REAL, cgst REAL, sgst REAL, igst_amt REAL, cgst_amt REAL, sgst_amt REAL
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_key ON sale_cache(key)")
@@ -679,7 +680,8 @@ def _init_cache_db():
             key TEXT PRIMARY KEY, qty REAL, rate REAL, seller_name TEXT, sheet_name TEXT,
             invoice_no TEXT, warehouse_code TEXT, gst_no TEXT, order_id TEXT,
             item_asin TEXT, item_sku TEXT, item_name TEXT, hsn_number TEXT,
-            invoice_val REAL
+            invoice_val REAL,
+            gross REAL, igst REAL, cgst REAL, sgst REAL, igst_amt REAL, cgst_amt REAL, sgst_amt REAL
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_key_purchase ON purchase_cache(key)")
@@ -747,7 +749,8 @@ def _fetch_and_store_google_sheet_to_sqlite():
                 key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT, sheet_name TEXT,
                 invoice_no TEXT, invoice_date TEXT, warehouse_code TEXT, gst_no TEXT,
                 order_id TEXT, item_asin TEXT, item_sku TEXT, item_name TEXT, hsn_number TEXT,
-                invoice_val REAL, reason TEXT, zoho_status TEXT, invoice_id TEXT
+                invoice_val REAL, reason TEXT, zoho_status TEXT, invoice_id TEXT,
+                gross REAL, igst REAL, cgst REAL, sgst REAL, igst_amt REAL, cgst_amt REAL, sgst_amt REAL
             )
         """)
         conn.execute("DROP TABLE IF EXISTS purchase_cache_new")
@@ -756,7 +759,8 @@ def _fetch_and_store_google_sheet_to_sqlite():
                 key TEXT PRIMARY KEY, qty REAL, rate REAL, seller_name TEXT, sheet_name TEXT,
                 invoice_no TEXT, warehouse_code TEXT, gst_no TEXT, order_id TEXT,
                 item_asin TEXT, item_sku TEXT, item_name TEXT, hsn_number TEXT,
-                invoice_val REAL
+                invoice_val REAL,
+                gross REAL, igst REAL, cgst REAL, sgst REAL, igst_amt REAL, cgst_amt REAL, sgst_amt REAL
             )
         """)
         conn.commit()
@@ -832,11 +836,27 @@ def _fetch_and_store_google_sheet_to_sqlite():
                             zoho_status = row[23].strip() if len(row) > 23 else ""
                             invoice_id = row[24].strip() if len(row) > 24 else ""
                             
+                            try: gross = float(row[14].strip()) if len(row) > 14 and row[14].strip() else 0.0
+                            except: gross = 0.0
+                            try: igst = float(row[15].strip()) if len(row) > 15 and row[15].strip() else 0.0
+                            except: igst = 0.0
+                            try: cgst = float(row[16].strip()) if len(row) > 16 and row[16].strip() else 0.0
+                            except: cgst = 0.0
+                            try: sgst = float(row[17].strip()) if len(row) > 17 and row[17].strip() else 0.0
+                            except: sgst = 0.0
+                            try: igst_amt = float(row[18].strip()) if len(row) > 18 and row[18].strip() else 0.0
+                            except: igst_amt = 0.0
+                            try: cgst_amt = float(row[19].strip()) if len(row) > 19 and row[19].strip() else 0.0
+                            except: cgst_amt = 0.0
+                            try: sgst_amt = float(row[20].strip()) if len(row) > 20 and row[20].strip() else 0.0
+                            except: sgst_amt = 0.0
+                            
                             batch.append((
                                 norm_key, qty, rate, state, seller_name_val, title,
                                 invoice_no, invoice_date, warehouse_code, gst_no,
                                 order_id, item_asin, item_sku, item_name, hsn_number,
-                                invoice_val, reason, zoho_status, invoice_id
+                                invoice_val, reason, zoho_status, invoice_id,
+                                gross, igst, cgst, sgst, igst_amt, cgst_amt, sgst_amt
                             ))
                             sheet_count += 1
                             
@@ -846,8 +866,9 @@ def _fetch_and_store_google_sheet_to_sqlite():
                                         key, qty, rate, state, seller_name, sheet_name,
                                         invoice_no, invoice_date, warehouse_code, gst_no,
                                         order_id, item_asin, item_sku, item_name, hsn_number,
-                                        invoice_val, reason, zoho_status, invoice_id
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        invoice_val, reason, zoho_status, invoice_id,
+                                        gross, igst, cgst, sgst, igst_amt, cgst_amt, sgst_amt
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """, batch)
                                 conn.commit()
                                 batch = []
@@ -879,11 +900,27 @@ def _fetch_and_store_google_sheet_to_sqlite():
                             except ValueError:
                                 pur_invoice_val = 0.0
                                 
+                            try: pur_gross = float(row[51].strip()) if len(row) > 51 and row[51].strip() else 0.0
+                            except: pur_gross = 0.0
+                            try: pur_igst = float(row[52].strip()) if len(row) > 52 and row[52].strip() else 0.0
+                            except: pur_igst = 0.0
+                            try: pur_cgst = float(row[53].strip()) if len(row) > 53 and row[53].strip() else 0.0
+                            except: pur_cgst = 0.0
+                            try: pur_sgst = float(row[54].strip()) if len(row) > 54 and row[54].strip() else 0.0
+                            except: pur_sgst = 0.0
+                            try: pur_igst_amt = float(row[55].strip()) if len(row) > 55 and row[55].strip() else 0.0
+                            except: pur_igst_amt = 0.0
+                            try: pur_cgst_amt = float(row[56].strip()) if len(row) > 56 and row[56].strip() else 0.0
+                            except: pur_cgst_amt = 0.0
+                            try: pur_sgst_amt = float(row[57].strip()) if len(row) > 57 and row[57].strip() else 0.0
+                            except: pur_sgst_amt = 0.0
+                                
                             pur_batch.append((
                                 pur_norm_key, pur_qty, pur_rate, pur_seller_name_val, title,
                                 pur_invoice_no, pur_warehouse_code, pur_gst_no, pur_order_id,
                                 pur_item_asin, pur_item_sku, pur_item_name, pur_hsn_number,
-                                pur_invoice_val
+                                pur_invoice_val,
+                                pur_gross, pur_igst, pur_cgst, pur_sgst, pur_igst_amt, pur_cgst_amt, pur_sgst_amt
                             ))
                             
                             if len(pur_batch) >= 5000:
@@ -892,8 +929,9 @@ def _fetch_and_store_google_sheet_to_sqlite():
                                         key, qty, rate, seller_name, sheet_name,
                                         invoice_no, warehouse_code, gst_no, order_id,
                                         item_asin, item_sku, item_name, hsn_number,
-                                        invoice_val
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        invoice_val,
+                                        gross, igst, cgst, sgst, igst_amt, cgst_amt, sgst_amt
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """, pur_batch)
                                 conn.commit()
                                 pur_batch = []
@@ -905,8 +943,9 @@ def _fetch_and_store_google_sheet_to_sqlite():
                                 key, qty, rate, state, seller_name, sheet_name,
                                 invoice_no, invoice_date, warehouse_code, gst_no,
                                 order_id, item_asin, item_sku, item_name, hsn_number,
-                                invoice_val, reason, zoho_status, invoice_id
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        invoice_val, reason, zoho_status, invoice_id,
+                                        gross, igst, cgst, sgst, igst_amt, cgst_amt, sgst_amt
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, batch)
                         conn.commit()
                         batch = []
@@ -915,9 +954,10 @@ def _fetch_and_store_google_sheet_to_sqlite():
                             INSERT OR REPLACE INTO purchase_cache_new (
                                 key, qty, rate, seller_name, sheet_name,
                                 invoice_no, warehouse_code, gst_no, order_id,
-                                item_asin, item_sku, item_name, hsn_number,
-                                invoice_val
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        item_asin, item_sku, item_name, hsn_number,
+                                        invoice_val,
+                                        gross, igst, cgst, sgst, igst_amt, cgst_amt, sgst_amt
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, pur_batch)
                         conn.commit()
                         pur_batch = []
@@ -1326,7 +1366,8 @@ def export_returns():
                 key, qty, rate, state, seller_name, sheet_name,
                 invoice_no, invoice_date, warehouse_code, gst_no,
                 order_id, item_asin, item_sku, item_name, hsn_number,
-                invoice_val, reason, zoho_status, invoice_id
+                invoice_val, reason, zoho_status, invoice_id,
+                gross, igst, cgst, sgst, igst_amt, cgst_amt, sgst_amt
             FROM sale_cache
         """
         params = []
@@ -1345,7 +1386,7 @@ def export_returns():
                 key, qty, rate, seller_name, sheet_name,
                 invoice_no, warehouse_code, gst_no, order_id,
                 item_asin, item_sku, item_name, hsn_number,
-                invoice_val
+                invoice_val, gross, igst, cgst, sgst, igst_amt, cgst_amt, sgst_amt
             FROM purchase_cache
         """
         pur_params = []
@@ -1366,7 +1407,8 @@ def export_returns():
             (
                 invoice_no, invoice_date, warehouse_code, gst_no,
                 order_id, item_asin, item_sku, item_name, hsn_number,
-                invoice_val, reason, zoho_status, invoice_id
+                invoice_val, reason, zoho_status, invoice_id,
+                gross_val, igst_val, cgst_val, sgst_val, igst_amt_val, cgst_amt_val, sgst_amt_val
             ) = row[6:]
             
             if not matches_platform(platform, db_key, db_seller_name):
@@ -1387,9 +1429,9 @@ def export_returns():
                 'hsn_number': hsn_number,
                 'quantity': db_qty,
                 'item_cost': db_rate,
-                'gross': round(db_qty * db_rate, 2),
-                'igst': 0, 'cgst': 0, 'sgst': 0,
-                'igst_amt': 0, 'cgst_amt': 0, 'sgst_amt': 0,
+                'gross': gross_val,
+                'igst': igst_val, 'cgst': cgst_val, 'sgst': sgst_val,
+                'igst_amt': igst_amt_val, 'cgst_amt': cgst_amt_val, 'sgst_amt': sgst_amt_val,
                 'invoice': invoice_val,
                 'reason': reason,
                 'zoho_status': zoho_status,
@@ -1412,7 +1454,8 @@ def export_returns():
             (
                 invoice_no, warehouse_code, gst_no, order_id,
                 item_asin, item_sku, item_name, hsn_number,
-                invoice_val
+                invoice_val,
+                gross_val, igst_val, cgst_val, sgst_val, igst_amt_val, cgst_amt_val, sgst_amt_val
             ) = row[5:]
             
             if not matches_platform(platform, db_key, db_seller_name):
@@ -1431,9 +1474,9 @@ def export_returns():
                 'hsn_number': hsn_number,
                 'quantity': db_qty,
                 'item_cost': db_rate,
-                'gross': round(db_qty * db_rate, 2),
-                'igst': 0, 'cgst': 0, 'sgst': 0,
-                'igst_amt': 0, 'cgst_amt': 0, 'sgst_amt': 0,
+                'gross': gross_val,
+                'igst': igst_val, 'cgst': cgst_val, 'sgst': sgst_val,
+                'igst_amt': igst_amt_val, 'cgst_amt': cgst_amt_val, 'sgst_amt': sgst_amt_val,
                 'invoice': invoice_val,
                 'purchase_unique_id': db_key,
                 'calc_qty': db_qty,
