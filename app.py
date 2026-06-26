@@ -654,7 +654,8 @@ def _init_cache_db():
             cursor.execute("PRAGMA table_info(sale_cache)")
             columns = [col[1] for col in cursor.fetchall()]
             conn.close()
-            if columns and ('rate' not in columns or 'seller_name' not in columns):
+            # Migrate if any new column like 'invoice_no' is missing
+            if columns and 'invoice_no' not in columns:
                 print("[CACHE SYNC] Outdated SQLite schema detected. Deleting old DB to trigger fresh load.", flush=True)
                 try:
                     os.remove(_CACHE_DB_PATH)
@@ -664,9 +665,23 @@ def _init_cache_db():
             print(f"[CACHE SYNC] Error checking schema migration: {str(check_err)}", flush=True)
 
     conn = sqlite3.connect(_CACHE_DB_PATH)
-    conn.execute("CREATE TABLE IF NOT EXISTS sale_cache (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sale_cache (
+            key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT, sheet_name TEXT,
+            invoice_no TEXT, invoice_date TEXT, warehouse_code TEXT, gst_no TEXT,
+            order_id TEXT, item_asin TEXT, item_sku TEXT, item_name TEXT, hsn_number TEXT,
+            invoice_val REAL, reason TEXT, zoho_status TEXT, invoice_id TEXT
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_key ON sale_cache(key)")
-    conn.execute("CREATE TABLE IF NOT EXISTS purchase_cache (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS purchase_cache (
+            key TEXT PRIMARY KEY, qty REAL, rate REAL, seller_name TEXT, sheet_name TEXT,
+            invoice_no TEXT, warehouse_code TEXT, gst_no TEXT, order_id TEXT,
+            item_asin TEXT, item_sku TEXT, item_name TEXT, hsn_number TEXT,
+            invoice_val REAL
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_key_purchase ON purchase_cache(key)")
     conn.commit()
     conn.close()
@@ -727,9 +742,23 @@ def _fetch_and_store_google_sheet_to_sqlite():
         conn = sqlite3.connect(_CACHE_DB_PATH)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("DROP TABLE IF EXISTS sale_cache_new")
-        conn.execute("CREATE TABLE sale_cache_new (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT)")
+        conn.execute("""
+            CREATE TABLE sale_cache_new (
+                key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT, sheet_name TEXT,
+                invoice_no TEXT, invoice_date TEXT, warehouse_code TEXT, gst_no TEXT,
+                order_id TEXT, item_asin TEXT, item_sku TEXT, item_name TEXT, hsn_number TEXT,
+                invoice_val REAL, reason TEXT, zoho_status TEXT, invoice_id TEXT
+            )
+        """)
         conn.execute("DROP TABLE IF EXISTS purchase_cache_new")
-        conn.execute("CREATE TABLE purchase_cache_new (key TEXT PRIMARY KEY, qty REAL, rate REAL, state TEXT, seller_name TEXT)")
+        conn.execute("""
+            CREATE TABLE purchase_cache_new (
+                key TEXT PRIMARY KEY, qty REAL, rate REAL, seller_name TEXT, sheet_name TEXT,
+                invoice_no TEXT, warehouse_code TEXT, gst_no TEXT, order_id TEXT,
+                item_asin TEXT, item_sku TEXT, item_name TEXT, hsn_number TEXT,
+                invoice_val REAL
+            )
+        """)
         conn.commit()
         
         total_keys = 0
@@ -784,11 +813,42 @@ def _fetch_and_store_google_sheet_to_sqlite():
                             except ValueError:
                                 rate = 0
                             state = state_val.strip()
-                            batch.append((norm_key, qty, rate, state, seller_name_val))
+                            
+                            # Additional sale fields
+                            invoice_no = row[1].strip() if len(row) > 1 else ""
+                            invoice_date = row[3].strip() if len(row) > 3 else ""
+                            warehouse_code = row[5].strip() if len(row) > 5 else ""
+                            gst_no = row[6].strip() if len(row) > 6 else ""
+                            order_id = row[7].strip() if len(row) > 7 else ""
+                            item_asin = row[8].strip() if len(row) > 8 else ""
+                            item_sku = row[9].strip() if len(row) > 9 else ""
+                            item_name = row[10].strip() if len(row) > 10 else ""
+                            hsn_number = row[11].strip() if len(row) > 11 else ""
+                            try:
+                                invoice_val = float(row[21].strip()) if len(row) > 21 and row[21].strip() else 0.0
+                            except ValueError:
+                                invoice_val = 0.0
+                            reason = row[22].strip() if len(row) > 22 else ""
+                            zoho_status = row[23].strip() if len(row) > 23 else ""
+                            invoice_id = row[24].strip() if len(row) > 24 else ""
+                            
+                            batch.append((
+                                norm_key, qty, rate, state, seller_name_val, title,
+                                invoice_no, invoice_date, warehouse_code, gst_no,
+                                order_id, item_asin, item_sku, item_name, hsn_number,
+                                invoice_val, reason, zoho_status, invoice_id
+                            ))
                             sheet_count += 1
                             
                             if len(batch) >= 5000:
-                                conn.executemany("INSERT OR REPLACE INTO sale_cache_new (key, qty, rate, state, seller_name) VALUES (?, ?, ?, ?, ?)", batch)
+                                conn.executemany("""
+                                    INSERT OR REPLACE INTO sale_cache_new (
+                                        key, qty, rate, state, seller_name, sheet_name,
+                                        invoice_no, invoice_date, warehouse_code, gst_no,
+                                        order_id, item_asin, item_sku, item_name, hsn_number,
+                                        invoice_val, reason, zoho_status, invoice_id
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, batch)
                                 conn.commit()
                                 batch = []
                                 
@@ -804,20 +864,61 @@ def _fetch_and_store_google_sheet_to_sqlite():
                             except ValueError:
                                 pur_rate = 0
                             pur_seller_name_val = row[41].strip() if len(row) > 41 else ""
-                            pur_batch.append((pur_norm_key, pur_qty, pur_rate, "", pur_seller_name_val))
+                            
+                            # Additional purchase fields
+                            pur_invoice_no = row[40].strip() if len(row) > 40 else ""
+                            pur_warehouse_code = row[42].strip() if len(row) > 42 else ""
+                            pur_gst_no = row[43].strip() if len(row) > 43 else ""
+                            pur_order_id = row[44].strip() if len(row) > 44 else ""
+                            pur_item_asin = row[45].strip() if len(row) > 45 else ""
+                            pur_item_sku = row[46].strip() if len(row) > 46 else ""
+                            pur_item_name = row[47].strip() if len(row) > 47 else ""
+                            pur_hsn_number = row[48].strip() if len(row) > 48 else ""
+                            try:
+                                pur_invoice_val = float(row[58].strip()) if len(row) > 58 and row[58].strip() else 0.0
+                            except ValueError:
+                                pur_invoice_val = 0.0
+                                
+                            pur_batch.append((
+                                pur_norm_key, pur_qty, pur_rate, pur_seller_name_val, title,
+                                pur_invoice_no, pur_warehouse_code, pur_gst_no, pur_order_id,
+                                pur_item_asin, pur_item_sku, pur_item_name, pur_hsn_number,
+                                pur_invoice_val
+                            ))
                             
                             if len(pur_batch) >= 5000:
-                                conn.executemany("INSERT OR REPLACE INTO purchase_cache_new (key, qty, rate, state, seller_name) VALUES (?, ?, ?, ?, ?)", pur_batch)
+                                conn.executemany("""
+                                    INSERT OR REPLACE INTO purchase_cache_new (
+                                        key, qty, rate, seller_name, sheet_name,
+                                        invoice_no, warehouse_code, gst_no, order_id,
+                                        item_asin, item_sku, item_name, hsn_number,
+                                        invoice_val
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, pur_batch)
                                 conn.commit()
                                 pur_batch = []
                     
                     # Insert remaining batch
                     if batch:
-                        conn.executemany("INSERT OR REPLACE INTO sale_cache_new (key, qty, rate, state, seller_name) VALUES (?, ?, ?, ?, ?)", batch)
+                        conn.executemany("""
+                            INSERT OR REPLACE INTO sale_cache_new (
+                                key, qty, rate, state, seller_name, sheet_name,
+                                invoice_no, invoice_date, warehouse_code, gst_no,
+                                order_id, item_asin, item_sku, item_name, hsn_number,
+                                invoice_val, reason, zoho_status, invoice_id
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, batch)
                         conn.commit()
                         batch = []
                     if pur_batch:
-                        conn.executemany("INSERT OR REPLACE INTO purchase_cache_new (key, qty, rate, state, seller_name) VALUES (?, ?, ?, ?, ?)", pur_batch)
+                        conn.executemany("""
+                            INSERT OR REPLACE INTO purchase_cache_new (
+                                key, qty, rate, seller_name, sheet_name,
+                                invoice_no, warehouse_code, gst_no, order_id,
+                                item_asin, item_sku, item_name, hsn_number,
+                                invoice_val
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, pur_batch)
                         conn.commit()
                         pur_batch = []
                     
@@ -1107,6 +1208,331 @@ def lookup_purchase_quantities():
         response = jsonify({"status": "Error", "message": str(e)})
         response.headers.add("Access-Control-Allow-Origin", "*")
         return response, 500
+
+
+@app.route('/api/get-available-sheets', methods=['GET', 'OPTIONS'])
+def get_available_sheets():
+    if request.method == 'OPTIONS':
+        response = jsonify({"status": "Success"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+        response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
+        return response
+
+    try:
+        # Lazy start of background loader
+        start_background_cache_loader()
+        
+        # Wait up to 10s if cache is loading
+        if not _cache_loaded_event.is_set():
+            _cache_loaded_event.wait(timeout=10)
+
+        conn = sqlite3.connect(_CACHE_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT sheet_name FROM sale_cache WHERE sheet_name IS NOT NULL AND sheet_name != ''")
+        sales_sheets = [r[0] for r in cursor.fetchall()]
+        cursor.execute("SELECT DISTINCT sheet_name FROM purchase_cache WHERE sheet_name IS NOT NULL AND sheet_name != ''")
+        purchases_sheets = [r[0] for r in cursor.fetchall()]
+        conn.close()
+        
+        all_sheets = list(set(sales_sheets + purchases_sheets))
+        
+        import re
+        years = []
+        for s in all_sheets:
+            m = re.search(r'\d{4}-\d{2}', s)
+            if m:
+                years.append(m.group(0))
+            else:
+                years.append(s)
+                
+        years = sorted(list(set(years)))
+        if not years:
+            years = ["2025-26", "2026-27"] # Fallbacks if empty
+            
+        response = jsonify({
+            "status": "Success",
+            "sheets": all_sheets,
+            "years": years
+        })
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response
+    except Exception as e:
+        traceback.print_exc()
+        response = jsonify({"status": "Error", "message": str(e)})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
+
+
+@app.route('/api/export-returns', methods=['POST', 'OPTIONS'])
+def export_returns():
+    if request.method == 'OPTIONS':
+        response = jsonify({"status": "Success"})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+        return response
+
+    try:
+        start_background_cache_loader()
+        
+        req_data = request.get_json(force=True, silent=True) or {}
+        platform = req_data.get('platform', '').strip().upper()
+        year = req_data.get('year', 'ALL').strip() # 'ALL' or '2025-26', '2026-27', etc.
+        data_type = req_data.get('dataType', 'ALL').strip().upper() # 'ALL', 'SALE', 'PURCHASE'
+        
+        def matches_platform(plat, key, seller_name, row_type=""):
+            if not plat or plat == 'ALL':
+                return True
+            plat = plat.upper()
+            key = (key or '').upper()
+            seller_name = (seller_name or '').upper()
+            row_type = (row_type or '').upper()
+            
+            if plat == 'AJIO':
+                # Exclude Myntra and Flipkart specific prefixes
+                if key.startswith('MY') or key.startswith('FK'):
+                    return False
+                if key.startswith('AJ') or key.startswith('CG') or key.startswith('PG'):
+                    return True
+                if 'AJIO' in key or 'AJIO' in seller_name or 'AJ' in seller_name:
+                    return True
+            elif plat == 'MYNTRA':
+                # Exclude Ajio and Flipkart specific prefixes
+                if key.startswith('AJ') or key.startswith('FK'):
+                    return False
+                if key.startswith('MY') or key.startswith('CG') or key.startswith('PG'):
+                    return True
+                if 'MYNTRA' in key or 'MYNTRA' in seller_name or 'MY' in seller_name:
+                    return True
+            elif plat == 'FLIPKART':
+                # Exclude Ajio and Myntra specific prefixes
+                if key.startswith('AJ') or key.startswith('MY'):
+                    return False
+                if key.startswith('FK') or key.startswith('CG') or key.startswith('PG'):
+                    return True
+                if 'FLIPKART' in key or 'FLIPKART' in seller_name or 'FK' in seller_name:
+                    return True
+            return False
+
+        if not _cache_loaded_event.is_set():
+            _cache_loaded_event.wait(timeout=10)
+
+        conn = sqlite3.connect(_CACHE_DB_PATH)
+        
+        # Build query for sales
+        sale_query = """
+            SELECT 
+                key, qty, rate, state, seller_name, sheet_name,
+                invoice_no, invoice_date, warehouse_code, gst_no,
+                order_id, item_asin, item_sku, item_name, hsn_number,
+                invoice_val, reason, zoho_status, invoice_id
+            FROM sale_cache
+        """
+        params = []
+        conditions = []
+        if year != 'ALL':
+            conditions.append("sheet_name LIKE ?")
+            params.append(f"%{year}%")
+        if conditions:
+            sale_query += " WHERE " + " AND ".join(conditions)
+        
+        sale_results = conn.execute(sale_query, params).fetchall()
+        
+        # Build query for purchases
+        purchase_query = """
+            SELECT 
+                key, qty, rate, seller_name, sheet_name,
+                invoice_no, warehouse_code, gst_no, order_id,
+                item_asin, item_sku, item_name, hsn_number,
+                invoice_val
+            FROM purchase_cache
+        """
+        pur_params = []
+        pur_conditions = []
+        if year != 'ALL':
+            pur_conditions.append("sheet_name LIKE ?")
+            pur_params.append(f"%{year}%")
+        if pur_conditions:
+            purchase_query += " WHERE " + " AND ".join(pur_conditions)
+            
+        purchase_results = conn.execute(purchase_query, pur_params).fetchall()
+        conn.close()
+        
+        # Format database records to match the expected Excel schema
+        sale_rows = []
+        for row in sale_results:
+            db_key, db_qty, db_rate, db_state, db_seller_name, db_sheet = row[0:6]
+            (
+                invoice_no, invoice_date, warehouse_code, gst_no,
+                order_id, item_asin, item_sku, item_name, hsn_number,
+                invoice_val, reason, zoho_status, invoice_id
+            ) = row[6:]
+            
+            if not matches_platform(platform, db_key, db_seller_name):
+                continue
+            
+            sale_rows.append({
+                'no': len(sale_rows) + 1,
+                'invoice_no': invoice_no,
+                'type': platform,
+                'invoice_date': invoice_date,
+                'warehouse_name': db_seller_name,
+                'warehouse_code': warehouse_code,
+                'gst_no': gst_no,
+                'order_id': order_id,
+                'item_asin': item_asin,
+                'item_sku': item_sku,
+                'item_name': item_name,
+                'hsn_number': hsn_number,
+                'quantity': db_qty,
+                'item_cost': db_rate,
+                'gross': round(db_qty * db_rate, 2),
+                'igst': 0, 'cgst': 0, 'sgst': 0,
+                'igst_amt': 0, 'cgst_amt': 0, 'sgst_amt': 0,
+                'invoice': invoice_val,
+                'reason': reason,
+                'zoho_status': zoho_status,
+                'invoice_id': invoice_id,
+                'state_code': db_state,
+                'sale_unique_id': db_key,
+                'calc_qty': db_qty,
+                'calc_cost': db_rate,
+                'calc_gross': round(db_qty * db_rate, 2),
+                'calc_igst': 0, 'calc_cgst': 0, 'calc_sgst': 0,
+                'calc_igst_amt': 0, 'calc_cgst_amt': 0, 'calc_sgst_amt': 0,
+                'calc_invoice': round(db_qty * db_rate, 2),
+                'state_code_short': f"({db_state})" if db_state else "",
+                'sheet_name': db_sheet
+            })
+            
+        purchase_rows = []
+        for row in purchase_results:
+            db_key, db_qty, db_rate, db_seller_name, db_sheet = row[0:5]
+            (
+                invoice_no, warehouse_code, gst_no, order_id,
+                item_asin, item_sku, item_name, hsn_number,
+                invoice_val
+            ) = row[5:]
+            
+            if not matches_platform(platform, db_key, db_seller_name):
+                continue
+                    
+            purchase_rows.append({
+                'no': len(purchase_rows) + 1,
+                'invoice_no': invoice_no,
+                'warehouse_name': db_seller_name,
+                'warehouse_code': warehouse_code,
+                'gst_no': gst_no,
+                'order_id': order_id,
+                'item_asin': item_asin,
+                'item_sku': item_sku,
+                'item_name': item_name,
+                'hsn_number': hsn_number,
+                'quantity': db_qty,
+                'item_cost': db_rate,
+                'gross': round(db_qty * db_rate, 2),
+                'igst': 0, 'cgst': 0, 'sgst': 0,
+                'igst_amt': 0, 'cgst_amt': 0, 'sgst_amt': 0,
+                'invoice': invoice_val,
+                'purchase_unique_id': db_key,
+                'calc_qty': db_qty,
+                'calc_cost': db_rate,
+                'calc_gross': round(db_qty * db_rate, 2),
+                'calc_igst': 0, 'calc_cgst': 0, 'calc_sgst': 0,
+                'calc_igst_amt': 0, 'calc_cgst_amt': 0, 'calc_sgst_amt': 0,
+                'calc_total_amt': round(db_qty * db_rate, 2),
+                'sheet_name': db_sheet
+            })
+
+        # Merge with locally uploaded data
+        try:
+            stored = load_stored_data()
+            local_sales = stored.get('sale', [])
+            local_purchases = stored.get('purchase', [])
+            
+            for row in local_sales:
+                db_sheet = row.get('sheet_name', get_financial_year())
+                if year != 'ALL' and year not in db_sheet:
+                    continue
+                if not matches_platform(platform, row.get('sale_unique_id', ''), row.get('warehouse_name', ''), row.get('type', '')):
+                    continue
+                row['sheet_name'] = db_sheet
+                row['no'] = len(sale_rows) + 1
+                sale_rows.append(row)
+                
+            for row in local_purchases:
+                db_sheet = row.get('sheet_name', get_financial_year())
+                if year != 'ALL' and year not in db_sheet:
+                    continue
+                if not matches_platform(platform, row.get('purchase_unique_id', ''), row.get('warehouse_name', '')):
+                    continue
+                row['sheet_name'] = db_sheet
+                row['no'] = len(purchase_rows) + 1
+                purchase_rows.append(row)
+        except Exception:
+            pass
+
+        # Organize by sheet/year dynamically based on matched sheets
+        sheets_data = {}
+        
+        # Helper to extract year suffix
+        import re
+        def get_year_key(sh):
+            m = re.search(r'\d{4}-\d{2}', sh)
+            return m.group(0) if m else sh
+
+        # Find all distinct years in results to construct keys
+        found_years = set()
+        for r in sale_rows:
+            found_years.add(get_year_key(r.get('sheet_name', '')))
+        for r in purchase_rows:
+            found_years.add(get_year_key(r.get('sheet_name', '')))
+            
+        for y_key in found_years:
+            if y_key:
+                sheets_data[y_key] = { 'sale': [], 'purchase': [] }
+                
+        # If no years found, make sure we have current year as default
+        if not sheets_data:
+            sheets_data[get_financial_year()] = { 'sale': [], 'purchase': [] }
+            
+        for row in sale_rows:
+            y_key = get_year_key(row.get('sheet_name', ''))
+            if y_key in sheets_data:
+                sheets_data[y_key]['sale'].append(row)
+            else:
+                # Default fallback
+                first_key = list(sheets_data.keys())[0]
+                sheets_data[first_key]['sale'].append(row)
+                
+        for row in purchase_rows:
+            y_key = get_year_key(row.get('sheet_name', ''))
+            if y_key in sheets_data:
+                sheets_data[y_key]['purchase'].append(row)
+            else:
+                first_key = list(sheets_data.keys())[0]
+                sheets_data[first_key]['purchase'].append(row)
+                
+        # Re-index row 'no' within each sheet
+        for yr in sheets_data:
+            for i, row in enumerate(sheets_data[yr]['sale']):
+                row['no'] = i + 1
+            for i, row in enumerate(sheets_data[yr]['purchase']):
+                row['no'] = i + 1
+
+        response = jsonify({
+            "status": "Success",
+            "data": sheets_data
+        })
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response
+    except Exception as e:
+        traceback.print_exc()
+        response = jsonify({"status": "Error", "message": str(e)})
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        return response, 500
+
 
 @app.route('/')
 def index():
