@@ -874,6 +874,25 @@ async function startSyncToGoogleSheets() {
         showToast('✅', 'Sync completed successfully!');
         refreshSheetDropdown();
         
+        // Silently clear local database and reset UI since data is successfully synced
+        try {
+            await fetch('/clear', { method: 'POST' });
+            state.saleData=[]; state.purchaseData=[];
+            state.saleTotal=0; state.purchaseTotal=0;
+            state.saleOffset=0; state.purchaseOffset=0;
+            document.getElementById('sale-count').textContent = '0';
+            document.getElementById('purchase-count').textContent = '0';
+            document.getElementById('total-count').textContent = '0';
+            document.getElementById('table-head').innerHTML = '';
+            document.getElementById('table-body').innerHTML = '';
+            document.getElementById('showing-info').textContent = 'Showing 0 rows';
+            document.getElementById('load-more-btn').classList.add('hidden');
+            resultSection.classList.add('hidden');
+            document.getElementById('header-status').classList.add('hidden');
+        } catch (e) {
+            console.error('Silent clear error:', e);
+        }
+        
     } catch(e) {
         hideGlobalLoader();
         if (progBar) progBar.style.display = 'none';

@@ -2004,6 +2004,10 @@ def clear_data():
         conn.execute("DROP TABLE IF EXISTS sync_sale_temp")
         conn.execute("DROP TABLE IF EXISTS sync_purchase_temp")
         conn.commit()
+        try:
+            conn.execute("VACUUM")
+        except Exception as vac_err:
+            print(f"[VACUUM ERROR] Failed to vacuum DB: {str(vac_err)}", flush=True)
         conn.close()
         
         # Also clean up output excels
