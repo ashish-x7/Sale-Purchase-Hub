@@ -2034,20 +2034,6 @@ def prepare_sync():
         if not sheet_name:
             return jsonify({'error': 'Target Sheet Name is required'}), 400
             
-        # Get all local rows from SQLite
-        conn = get_db_connection()
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM sale ORDER BY no ASC")
-        sale_data = [dict(r) for r in cursor.fetchall()]
-        cursor.execute("SELECT * FROM purchase ORDER BY no ASC")
-        purchase_data = [dict(r) for r in cursor.fetchall()]
-        
-        original_sale_count = len(sale_data)
-        original_purchase_count = len(purchase_data)
-        skipped_sale = 0
-        skipped_purchase = 0
-        
         existing_sale_ids = set()
         existing_purchase_ids = set()
         
@@ -2080,32 +2066,16 @@ def prepare_sync():
                 except Exception as cache_err:
                     print(f"Fallback cache query failed: {str(cache_err)}", flush=True)
                     
-        # Filter rows
-        sale_filtered = []
-        for row in sale_data:
-            uid = str(row.get('sale_unique_id', ''))
-            if mode == 'append' and uid in existing_sale_ids:
-                skipped_sale += 1
-            else:
-                sale_filtered.append(row)
-                
-        purchase_filtered = []
-        for row in purchase_data:
-            uid = str(row.get('purchase_unique_id', ''))
-            if mode == 'append' and uid in existing_purchase_ids:
-                skipped_purchase += 1
-            else:
-                purchase_filtered.append(row)
-                
-        # Re-number the appended rows starting after the existing counts
-        existing_sale_count = len(existing_sale_ids)
-        existing_purchase_count = len(existing_purchase_ids)
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
         
-        for idx, row in enumerate(sale_filtered):
-            row['no'] = existing_sale_count + idx + 1
-        for idx, row in enumerate(purchase_filtered):
-            row['no'] = existing_purchase_count + idx + 1
-            
+        # Get count of original records
+        cursor.execute("SELECT COUNT(*) FROM sale")
+        original_sale_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM purchase")
+        original_purchase_count = cursor.fetchone()[0]
+        
         # Write to temporary tables in local_store.db
         conn.execute("DROP TABLE IF EXISTS sync_sale_temp")
         conn.execute("DROP TABLE IF EXISTS sync_purchase_temp")
@@ -2133,26 +2103,70 @@ def prepare_sync():
             'calc_cgst_amt', 'calc_sgst_amt', 'calc_total_amt', 'sheet_name'
         ]
         
-        if sale_filtered:
-            placeholders = ','.join(['?' for _ in sale_keys])
-            conn.executemany(f"INSERT INTO sync_sale_temp ({','.join(sale_keys)}) VALUES ({placeholders})", 
-                             [tuple(row.get(k, '') for k in sale_keys) for row in sale_filtered])
-            
-        if purchase_filtered:
-            placeholders = ','.join(['?' for _ in purchase_keys])
-            conn.executemany(f"INSERT INTO sync_purchase_temp ({','.join(purchase_keys)}) VALUES ({placeholders})", 
-                             [tuple(row.get(k, '') for k in purchase_keys) for row in purchase_filtered])
-            
-        conn.commit()
+        # Filter and insert sales row by row using a cursor to keep memory flat
+        cursor.execute("SELECT * FROM sale ORDER BY no ASC")
+        skipped_sale = 0
+        inserted_sale = 0
+        existing_sale_count = len(existing_sale_ids)
         
-        cursor.execute("SELECT COUNT(*) FROM sync_sale_temp")
-        to_sync_sale = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM sync_purchase_temp")
-        to_sync_purchase = cursor.fetchone()[0]
+        sale_batch = []
+        for r in cursor:
+            row = dict(r)
+            uid = str(row.get('sale_unique_id', ''))
+            if mode == 'append' and uid in existing_sale_ids:
+                skipped_sale += 1
+            else:
+                row['no'] = existing_sale_count + inserted_sale + 1
+                sale_batch.append(tuple(row.get(k, '') for k in sale_keys))
+                inserted_sale += 1
+                
+            if len(sale_batch) >= 1000:
+                placeholders = ','.join(['?' for _ in sale_keys])
+                conn.execute("BEGIN TRANSACTION")
+                conn.executemany(f"INSERT INTO sync_sale_temp ({','.join(sale_keys)}) VALUES ({placeholders})", sale_batch)
+                conn.commit()
+                sale_batch = []
+                
+        if sale_batch:
+            placeholders = ','.join(['?' for _ in sale_keys])
+            conn.execute("BEGIN TRANSACTION")
+            conn.executemany(f"INSERT INTO sync_sale_temp ({','.join(sale_keys)}) VALUES ({placeholders})", sale_batch)
+            conn.commit()
+            
+        # Filter and insert purchases row by row using a cursor to keep memory flat
+        cursor.execute("SELECT * FROM purchase ORDER BY no ASC")
+        skipped_purchase = 0
+        inserted_purchase = 0
+        existing_purchase_count = len(existing_purchase_ids)
+        
+        purchase_batch = []
+        for r in cursor:
+            row = dict(r)
+            uid = str(row.get('purchase_unique_id', ''))
+            if mode == 'append' and uid in existing_purchase_ids:
+                skipped_purchase += 1
+            else:
+                row['no'] = existing_purchase_count + inserted_purchase + 1
+                purchase_batch.append(tuple(row.get(k, '') for k in purchase_keys))
+                inserted_purchase += 1
+                
+            if len(purchase_batch) >= 1000:
+                placeholders = ','.join(['?' for _ in purchase_keys])
+                conn.execute("BEGIN TRANSACTION")
+                conn.executemany(f"INSERT INTO sync_purchase_temp ({','.join(purchase_keys)}) VALUES ({placeholders})", purchase_batch)
+                conn.commit()
+                purchase_batch = []
+                
+        if purchase_batch:
+            placeholders = ','.join(['?' for _ in purchase_keys])
+            conn.execute("BEGIN TRANSACTION")
+            conn.executemany(f"INSERT INTO sync_purchase_temp ({','.join(purchase_keys)}) VALUES ({placeholders})", purchase_batch)
+            conn.commit()
+            
         conn.close()
         
         # Free memory
-        del sale_data, purchase_data, sale_filtered, purchase_filtered
+        del existing_sale_ids, existing_purchase_ids
         import gc
         gc.collect()
         
@@ -2162,13 +2176,12 @@ def prepare_sync():
             'originalPurchase': original_purchase_count,
             'skippedSale': skipped_sale,
             'skippedPurchase': skipped_purchase,
-            'toSyncSale': to_sync_sale,
-            'toSyncPurchase': to_sync_purchase,
+            'toSyncSale': inserted_sale,
+            'toSyncPurchase': inserted_purchase,
         })
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
-
 
 @app.route('/api/get-sync-chunk', methods=['GET'])
 def get_sync_chunk():
