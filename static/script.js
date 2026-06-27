@@ -16,6 +16,7 @@ const state = {
 
     // Sheet Viewer
     selectedSheet: '',
+    availableSheets: [],
     viewerHeaders: [], viewerRows: [], viewerAllRows: [],
     viewerStartRow: 3, viewerPageSize: 25, viewerTotalRows: 0,
     searchTimer: null, searchToken: 0,
@@ -338,12 +339,46 @@ loadExistingData();
 // GOOGLE SHEETS — Hardcoded URL
 // ═══════════════════════════════════════════════════════════════════════
 
-function showGlobalLoader(t, s) {
-    document.getElementById('global-loader-title').textContent = t;
-    document.getElementById('global-loader-status').textContent = s;
-    document.getElementById('global-loader').classList.remove('hidden');
+function showGlobalLoader(t, s, percent = null) {
+    const loader = document.getElementById('global-loader');
+    const title = document.getElementById('global-loader-title');
+    const status = document.getElementById('global-loader-status');
+    const progressBar = document.getElementById('global-progress-bar');
+    const progressFill = document.getElementById('global-progress-fill');
+
+    title.textContent = t;
+    status.textContent = s;
+    loader.classList.remove('hidden');
+
+    if (typeof percent === 'number' && percent >= 0) {
+        progressBar.style.display = 'block';
+        progressFill.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+    } else {
+        progressBar.style.display = 'none';
+        progressFill.style.width = '0%';
+    }
 }
-function hideGlobalLoader() { document.getElementById('global-loader').classList.add('hidden'); }
+
+function hideGlobalLoader() {
+    const loader = document.getElementById('global-loader');
+    const progressBar = document.getElementById('global-progress-bar');
+    const progressFill = document.getElementById('global-progress-fill');
+
+    loader.classList.add('hidden');
+    progressBar.style.display = 'none';
+    progressFill.style.width = '0%';
+}
+
+function updateGlobalLoaderProgress(percent, statusText = null) {
+    const progressBar = document.getElementById('global-progress-bar');
+    const progressFill = document.getElementById('global-progress-fill');
+    const status = document.getElementById('global-loader-status');
+    const displayPercent = Math.min(100, Math.max(0, percent));
+
+    progressBar.style.display = 'block';
+    progressFill.style.width = `${displayPercent}%`;
+    status.textContent = statusText ? `${statusText} (${displayPercent}%)` : `${displayPercent}% complete`;
+}
 
 // ─── Load Sheet Names ───────────────────────────────────────────────────
 async function refreshSheetDropdown() {
@@ -359,6 +394,7 @@ async function refreshSheetDropdown() {
             if(sel) sel.innerHTML = '<option value="">-- Choose sheet --</option>';
             if(syncSel) syncSel.innerHTML = '<option value="">-- Choose sheet --</option>';
 
+            state.availableSheets = r.sheets || [];
             r.sheets.forEach(sh => {
                 const txt = `${sh.name} (${sh.rows} rows)`;
                 if(sel) { const o=document.createElement('option'); o.value=sh.name; o.textContent=txt; sel.appendChild(o); }
@@ -422,6 +458,137 @@ function setActiveSheetTab(sheetName) {
 function onSheetSelectionChange() {
     const sel = document.getElementById('sheet-select');
     setActiveSheetTab(sel.value);
+}
+
+function openDownloadSheetModal() {
+    const modal = document.getElementById('download-sheet-modal');
+    const list = document.getElementById('download-sheet-list');
+    const selectAll = document.getElementById('download-sheet-select-all');
+
+    list.innerHTML = '';
+    selectAll.checked = false;
+
+    if (!state.availableSheets || state.availableSheets.length === 0) {
+        list.innerHTML = '<div style="color:var(--text-muted);">No sheets available to download.</div>';
+        modal.classList.remove('hidden');
+        return;
+    }
+
+    state.availableSheets.forEach((sheet, idx) => {
+        const wrapper = document.createElement('div');
+        wrapper.style.marginBottom = '10px';
+        wrapper.style.display = 'flex';
+        wrapper.style.alignItems = 'center';
+        wrapper.style.gap = '10px';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = `download-sheet-${idx}`;
+        checkbox.value = sheet.name;
+        checkbox.style.cursor = 'pointer';
+
+        const label = document.createElement('label');
+        label.htmlFor = checkbox.id;
+        label.style.cursor = 'pointer';
+        label.style.display = 'flex';
+        label.style.justifyContent = 'space-between';
+        label.style.width = '100%';
+        label.style.fontSize = '0.95rem';
+        label.innerHTML = `<span>${sheet.name}</span><span style="color:var(--text-muted); font-size:0.85rem;">${sheet.rows} rows</span>`;
+
+        wrapper.appendChild(checkbox);
+        wrapper.appendChild(label);
+        list.appendChild(wrapper);
+    });
+
+    modal.classList.remove('hidden');
+}
+
+function closeDownloadSheetModal() {
+    document.getElementById('download-sheet-modal').classList.add('hidden');
+}
+
+function toggleDownloadSheetSelectAll(checked) {
+    const list = document.getElementById('download-sheet-list');
+    if (!list) return;
+    list.querySelectorAll('input[type="checkbox"]').forEach(chk => {
+        chk.checked = checked;
+    });
+}
+
+function getSelectedDownloadSheets() {
+    const list = document.getElementById('download-sheet-list');
+    if (!list) return [];
+    return Array.from(list.querySelectorAll('input[type="checkbox"]'))
+        .filter(chk => chk.checked)
+        .map(chk => chk.value);
+}
+
+async function downloadSelectedSheets() {
+    const selectedSheets = getSelectedDownloadSheets();
+    console.log('[DEBUG] downloadSelectedSheets called', { selectedSheets, XLSX_type: typeof XLSX, window_XLSX: window.XLSX });
+    if (!selectedSheets.length) {
+        showToast('⚠️', 'Please select at least one sheet to download.', true);
+        return;
+    }
+
+    closeDownloadSheetModal();
+    showGlobalLoader('Preparing Excel', `Downloading ${selectedSheets.length} sheet(s)...`, 0);
+
+    try {
+        if (typeof XLSX === 'undefined') {
+            throw new Error('XLSX is not defined in the browser environment');
+        }
+        const wb = XLSX.utils.book_new();
+        const sheetNames = new Set();
+
+        for (let i = 0; i < selectedSheets.length; i++) {
+            const sheetName = selectedSheets[i];
+            const res = await fetch(`${WEB_APP_URL}?action=getSheetData&sheetName=${encodeURIComponent(sheetName)}&startRow=3&numRows=100000`);
+            const data = await res.json();
+            if (!data.success) {
+                throw new Error(`Failed to load sheet: ${sheetName}`);
+            }
+
+            const percent = Math.round(((i + 0.5) / selectedSheets.length) * 100);
+            updateGlobalLoaderProgress(percent, `Downloading ${sheetName} (${i + 1} of ${selectedSheets.length})...`);
+
+            const rows = [];
+            if (Array.isArray(data.headers) && data.headers.length > 0) {
+                data.headers.forEach(headerRow => {
+                    rows.push(headerRow.map(cell => cell == null ? '' : cell));
+                });
+            }
+            if (Array.isArray(data.data) && data.data.length > 0) {
+                data.data.forEach(row => {
+                    rows.push(row.map(cell => cell == null ? '' : cell));
+                });
+            }
+
+            const safeName = sheetName.substring(0, 31);
+            let finalName = safeName;
+            let idx = 1;
+            while (sheetNames.has(finalName)) {
+                const suffix = `_${idx}`;
+                finalName = safeName.substring(0, 31 - suffix.length) + suffix;
+                idx += 1;
+            }
+            sheetNames.add(finalName);
+
+            const ws = XLSX.utils.aoa_to_sheet(rows.length ? rows : [[]]);
+            XLSX.utils.book_append_sheet(wb, ws, finalName);
+        }
+
+        updateGlobalLoaderProgress(100, 'Finalizing file...');
+        const now = new Date();
+        const stamp = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
+        XLSX.writeFile(wb, `Sale_Purchase_Sheets_${stamp}.xlsx`);
+        hideGlobalLoader();
+        showToast('✅', 'Excel file downloaded successfully!');
+    } catch (err) {
+        hideGlobalLoader();
+        showToast('❌', err.message || 'Download failed', true);
+    }
 }
 
 function onSheetRowsChange() {

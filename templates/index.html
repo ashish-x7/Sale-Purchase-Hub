@@ -205,6 +205,7 @@
                     </select>
 
                     <button class="btn btn-secondary btn-sm" onclick="loadSheetData(3)">🔄 Refresh</button>
+                    <button class="btn btn-secondary btn-sm" onclick="openDownloadSheetModal()">📥 Download Excel</button>
                     <button class="btn btn-danger-outline btn-sm" onclick="triggerClearSheetWarning()">🗑️ Clear</button>
 
                     <div class="pagination-container">
@@ -332,6 +333,31 @@
         </div>
     </div>
 
+    <!-- Download Sheets Modal -->
+    <div id="download-sheet-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="width:480px; max-width:92vw;">
+            <h3>📥 Download Sheets as Excel</h3>
+            <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:16px;">
+                Select one or more Google Sheet tabs to download into a single Excel file. Each chosen sheet becomes its own worksheet.
+            </p>
+            <div id="download-sheet-list" style="max-height:320px; overflow:auto; padding-right:8px; margin-bottom:16px;">
+                <!-- Sheet checkboxes inserted here -->
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:16px;">
+                <label style="display:flex; align-items:center; gap:8px; font-size:0.9rem; color:var(--text-primary); cursor:pointer;">
+                    <input type="checkbox" id="download-sheet-select-all" onchange="toggleDownloadSheetSelectAll(this.checked)">
+                    Select All
+                </label>
+                <span id="download-sheet-hint" style="font-size:0.82rem; color:var(--text-muted);">Choose at least one sheet.</span>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="downloadSelectedSheets()">Download</button>
+                <button class="btn btn-secondary" onclick="closeDownloadSheetModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="/static/script.js"></script>
 </body>
 </html>
