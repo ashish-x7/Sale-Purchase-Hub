@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import io
 import time
 import math
@@ -51,22 +52,263 @@ def get_financial_year():
         return f'{now.year - 1}-{str(now.year)[2:]}'
 
 
-def load_stored_data():
-    """Load previously stored data from disk."""
+LOCAL_DB_PATH = os.path.join(DATA_DIR, 'local_store.db')
+
+def get_db_connection(db_path=LOCAL_DB_PATH):
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+def init_local_db():
+    conn = get_db_connection()
+    # Create sales table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sale (
+            no INTEGER,
+            invoice_no TEXT,
+            type TEXT,
+            invoice_date TEXT,
+            warehouse_name TEXT,
+            warehouse_code TEXT,
+            gst_no TEXT,
+            order_id TEXT,
+            item_asin TEXT,
+            item_sku TEXT,
+            item_name TEXT,
+            hsn_number TEXT,
+            quantity REAL,
+            item_cost REAL,
+            gross REAL,
+            igst REAL,
+            cgst REAL,
+            sgst REAL,
+            igst_amt REAL,
+            cgst_amt REAL,
+            sgst_amt REAL,
+            invoice REAL,
+            reason TEXT,
+            zoho_status TEXT,
+            invoice_id TEXT,
+            state_code TEXT,
+            sale_unique_id TEXT PRIMARY KEY,
+            calc_qty REAL,
+            calc_cost REAL,
+            calc_gross REAL,
+            calc_igst REAL,
+            calc_cgst REAL,
+            calc_sgst REAL,
+            calc_igst_amt REAL,
+            calc_cgst_amt REAL,
+            calc_sgst_amt REAL,
+            calc_invoice REAL,
+            state_code_short TEXT,
+            sheet_name TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sale_uid ON sale(sale_unique_id)")
+    
+    # Create purchase table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS purchase (
+            no INTEGER,
+            invoice_no TEXT,
+            warehouse_name TEXT,
+            warehouse_code TEXT,
+            gst_no TEXT,
+            order_id TEXT,
+            item_asin TEXT,
+            item_sku TEXT,
+            item_name TEXT,
+            hsn_number TEXT,
+            quantity REAL,
+            item_cost REAL,
+            gross REAL,
+            igst REAL,
+            cgst REAL,
+            sgst REAL,
+            igst_amt REAL,
+            cgst_amt REAL,
+            sgst_amt REAL,
+            invoice REAL,
+            purchase_unique_id TEXT PRIMARY KEY,
+            calc_qty REAL,
+            calc_cost REAL,
+            calc_gross REAL,
+            calc_igst REAL,
+            calc_cgst REAL,
+            calc_sgst REAL,
+            calc_igst_amt REAL,
+            calc_cgst_amt REAL,
+            calc_sgst_amt REAL,
+            calc_total_amt REAL,
+            sheet_name TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_purchase_uid ON purchase(purchase_unique_id)")
+    conn.commit()
+    conn.close()
+
+def migrate_pickle_to_sqlite():
     if os.path.exists(DATA_STORE_PATH):
+        print("[MIGRATION] Found processed_data_store.pkl. Migrating to SQLite...", flush=True)
         try:
             with open(DATA_STORE_PATH, 'rb') as f:
-                return normalize_stored_data(pickle.load(f))
-        except Exception:
-            pass
-    return {'sale': [], 'purchase': [], 'sale_ids': set(), 'purchase_ids': set()}
+                stored = pickle.load(f)
+            stored = normalize_stored_data(stored)
+            
+            conn = get_db_connection()
+            
+            # Insert sales
+            sales = stored.get('sale', [])
+            if sales:
+                keys = [
+                    'no', 'invoice_no', 'type', 'invoice_date', 'warehouse_name',
+                    'warehouse_code', 'gst_no', 'order_id', 'item_asin', 'item_sku',
+                    'item_name', 'hsn_number', 'quantity', 'item_cost', 'gross',
+                    'igst', 'cgst', 'sgst', 'igst_amt', 'cgst_amt', 'sgst_amt',
+                    'invoice', 'reason', 'zoho_status', 'invoice_id', 'state_code',
+                    'sale_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+                    'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+                    'calc_cgst_amt', 'calc_sgst_amt', 'calc_invoice', 'state_code_short', 'sheet_name'
+                ]
+                placeholders = ','.join(['?' for _ in keys])
+                insert_query = f"INSERT OR IGNORE INTO sale ({','.join(keys)}) VALUES ({placeholders})"
+                
+                batch = []
+                for row in sales:
+                    if 'sheet_name' not in row:
+                        row['sheet_name'] = get_financial_year()
+                    batch.append(tuple(row.get(k, '') for k in keys))
+                conn.executemany(insert_query, batch)
+                
+            # Insert purchases
+            purchases = stored.get('purchase', [])
+            if purchases:
+                keys = [
+                    'no', 'invoice_no', 'warehouse_name', 'warehouse_code', 'gst_no',
+                    'order_id', 'item_asin', 'item_sku', 'item_name', 'hsn_number',
+                    'quantity', 'item_cost', 'gross', 'igst', 'cgst', 'sgst',
+                    'igst_amt', 'cgst_amt', 'sgst_amt', 'invoice',
+                    'purchase_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+                    'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+                    'calc_cgst_amt', 'calc_sgst_amt', 'calc_total_amt', 'sheet_name'
+                ]
+                placeholders = ','.join(['?' for _ in keys])
+                insert_query = f"INSERT OR IGNORE INTO purchase ({','.join(keys)}) VALUES ({placeholders})"
+                
+                batch = []
+                for row in purchases:
+                    if 'sheet_name' not in row:
+                        row['sheet_name'] = get_financial_year()
+                    batch.append(tuple(row.get(k, '') for k in keys))
+                conn.executemany(insert_query, batch)
+                
+            conn.commit()
+            conn.close()
+            
+            # Rename the pickle file so we don't migrate it again
+            backup_path = DATA_STORE_PATH + '.bak'
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            os.rename(DATA_STORE_PATH, backup_path)
+            print("[MIGRATION] Migration successful! Backup created at processed_data_store.pkl.bak", flush=True)
+        except Exception as e:
+            print(f"[MIGRATION ERROR] Failed to migrate pickle to SQLite: {str(e)}", flush=True)
+            traceback.print_exc()
 
+def save_new_data_sqlite(new_sale_data, new_purchase_data):
+    """Save new data directly into SQLite, skipping duplicates, and return counts of new/duplicate rows."""
+    conn = get_db_connection()
+    
+    sale_keys = [
+        'no', 'invoice_no', 'type', 'invoice_date', 'warehouse_name',
+        'warehouse_code', 'gst_no', 'order_id', 'item_asin', 'item_sku',
+        'item_name', 'hsn_number', 'quantity', 'item_cost', 'gross',
+        'igst', 'cgst', 'sgst', 'igst_amt', 'cgst_amt', 'sgst_amt',
+        'invoice', 'reason', 'zoho_status', 'invoice_id', 'state_code',
+        'sale_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+        'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+        'calc_cgst_amt', 'calc_sgst_amt', 'calc_invoice', 'state_code_short', 'sheet_name'
+    ]
+    
+    purchase_keys = [
+        'no', 'invoice_no', 'warehouse_name', 'warehouse_code', 'gst_no',
+        'order_id', 'item_asin', 'item_sku', 'item_name', 'hsn_number',
+        'quantity', 'item_cost', 'gross', 'igst', 'cgst', 'sgst',
+        'igst_amt', 'cgst_amt', 'sgst_amt', 'invoice',
+        'purchase_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+        'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+        'calc_cgst_amt', 'calc_sgst_amt', 'calc_total_amt', 'sheet_name'
+    ]
+    
+    # 1. Deduplicate new sales
+    sale_new = 0
+    sale_dups = 0
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT sale_unique_id FROM sale")
+    existing_sale_ids = {r[0] for r in cursor.fetchall()}
+    
+    cursor.execute("SELECT COALESCE(MAX(no), 0) FROM sale")
+    current_sale_no = cursor.fetchone()[0]
+    
+    sale_insert_batch = []
+    for row in new_sale_data:
+        uid = row.get('sale_unique_id')
+        if uid in existing_sale_ids:
+            sale_dups += 1
+        else:
+            current_sale_no += 1
+            row['no'] = current_sale_no
+            row['sheet_name'] = get_financial_year()
+            sale_insert_batch.append(tuple(row.get(k, '') for k in sale_keys))
+            existing_sale_ids.add(uid)
+            sale_new += 1
+            
+    if sale_insert_batch:
+        placeholders = ','.join(['?' for _ in sale_keys])
+        conn.executemany(f"INSERT INTO sale ({','.join(sale_keys)}) VALUES ({placeholders})", sale_insert_batch)
+        
+    # 2. Deduplicate new purchases
+    purchase_new = 0
+    purchase_dups = 0
+    
+    cursor.execute("SELECT purchase_unique_id FROM purchase")
+    existing_purchase_ids = {r[0] for r in cursor.fetchall()}
+    
+    cursor.execute("SELECT COALESCE(MAX(no), 0) FROM purchase")
+    current_purchase_no = cursor.fetchone()[0]
+    
+    purchase_insert_batch = []
+    for row in new_purchase_data:
+        uid = row.get('purchase_unique_id')
+        if uid in existing_purchase_ids:
+            purchase_dups += 1
+        else:
+            current_purchase_no += 1
+            row['no'] = current_purchase_no
+            row['sheet_name'] = get_financial_year()
+            purchase_insert_batch.append(tuple(row.get(k, '') for k in purchase_keys))
+            existing_purchase_ids.add(uid)
+            purchase_new += 1
+            
+    if purchase_insert_batch:
+        placeholders = ','.join(['?' for _ in purchase_keys])
+        conn.executemany(f"INSERT INTO purchase ({','.join(purchase_keys)}) VALUES ({placeholders})", purchase_insert_batch)
+        
+    conn.commit()
+    conn.close()
+    
+    return sale_new, sale_dups, purchase_new, purchase_dups
 
-def save_stored_data(data):
-    """Save data to disk for persistence."""
-    with open(DATA_STORE_PATH, 'wb') as f:
-        pickle.dump(normalize_stored_data(data), f)
-
+def get_rows_as_dicts(table_name, limit=100, offset=0):
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT * FROM {table_name} ORDER BY no ASC LIMIT ? OFFSET ?", (limit, offset))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
 
 def clean_json_value(value):
     """Return a value that can be safely serialized as strict JSON."""
@@ -229,32 +471,44 @@ def read_xls_file(filepath):
 
 
 def read_xlsx_file(filepath):
-    """Read .xlsx file."""
+    """Read .xlsx file using read_only=True for extremely low memory usage."""
     try:
-        wb = openpyxl.load_workbook(filepath, data_only=True)
-        ws = wb.active
+        wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+        ws = wb.active if wb.active is not None else wb.worksheets[0]
         
         headers = []
         seen = {}
-        for c in range(1, ws.max_column + 1):
-            h = ws.cell(row=2, column=c).value  # Row 2 = headers
-            if h is None:
-                h = f'Col_{c}'
-            h = str(h).strip()
-            if h in seen:
-                seen[h] += 1
-                h = f"{h}_{seen[h]}"
-            else:
-                seen[h] = 1
-            headers.append(h)
-        
         rows = []
-        for r in range(3, ws.max_row + 1):  # Data starts at row 3
-            row_data = {}
-            for c in range(1, ws.max_column + 1):
-                row_data[headers[c - 1]] = ws.cell(row=r, column=c).value
-            rows.append(row_data)
         
+        for r_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            if r_idx == 2:
+                # Row 2 = headers
+                for c_idx, cell_value in enumerate(row):
+                    h = cell_value
+                    if h is None:
+                        h = f'Col_{c_idx + 1}'
+                    h = str(h).strip()
+                    if h in seen:
+                        seen[h] += 1
+                        h = f"{h}_{seen[h]}"
+                    else:
+                        seen[h] = 1
+                    headers.append(h)
+            elif r_idx >= 3:
+                # Row 3 onwards = data
+                # Skip row if it is completely empty
+                if not any(cell_value is not None and str(cell_value).strip() != '' for cell_value in row):
+                    continue
+                
+                row_data = {}
+                for c_idx, cell_value in enumerate(row):
+                    if c_idx < len(headers):
+                        row_data[headers[c_idx]] = cell_value
+                    else:
+                        row_data[f'Col_{c_idx + 1}'] = cell_value
+                rows.append(row_data)
+                
+        wb.close()
         return headers, rows
     except Exception as e:
         raise Exception(f'Error reading {os.path.basename(filepath)}: {str(e)}')
@@ -690,6 +944,8 @@ def _init_cache_db():
 
 print("[DATABASE PATH] Resolving _CACHE_DB_PATH:", _CACHE_DB_PATH, flush=True)
 _init_cache_db()
+init_local_db()
+migrate_pickle_to_sqlite()
 
 def _fetch_and_store_google_sheet_to_sqlite():
     """Download Google Sheet CSV data and store directly into SQLite (low memory)."""
@@ -1089,7 +1345,6 @@ def lookup_sale_quantities():
         return response
 
     try:
-        # Start background sync thread inside Gunicorn worker process lazily on first request
         start_background_cache_loader()
         
         print("[LOOKUP] Received lookup request!", flush=True)
@@ -1101,27 +1356,20 @@ def lookup_sale_quantities():
             response.headers.add("Access-Control-Allow-Origin", "*")
             return response, 400
 
-        # Wait for the initial cache load to complete (up to 90 seconds if empty)
         if not _cache_loaded_event.is_set():
             print("[LOOKUP] Cache not loaded yet, waiting for initial sync...", flush=True)
             _cache_loaded_event.wait(timeout=90)
-            if not _cache_loaded_event.is_set():
-                print("[LOOKUP] Cache still not loaded after 90s!", flush=True)
 
-        # Query SQLite directly — very low memory usage
         mapping = {}
         try:
             conn = sqlite3.connect(_CACHE_DB_PATH)
-            # Query in batches to keep memory low
             norm_keys = [(str(k).strip().upper(),) for k in keys]
-            # Use parameterized query with IN clause (batch of 500)
             for i in range(0, len(norm_keys), 500):
                 batch = norm_keys[i:i+500]
                 placeholders = ','.join(['?' for _ in batch])
                 query = f"SELECT key, qty, rate, state, seller_name FROM sale_cache WHERE key IN ({placeholders})"
                 results = conn.execute(query, [k[0] for k in batch]).fetchall()
                 for db_key, db_qty, db_rate, db_state, db_seller_name in results:
-                    # Find the original key (preserve case)
                     for orig_key in keys:
                         if str(orig_key).strip().upper() == db_key:
                             mapping[orig_key] = {
@@ -1135,10 +1383,13 @@ def lookup_sale_quantities():
         except Exception as db_err:
             print(f"[LOOKUP] SQLite query error: {str(db_err)}", flush=True)
 
-        # Merge with locally uploaded data from processed_data_store.pkl (if any)
         try:
-            stored = load_stored_data()
-            sale_rows = stored.get('sale', [])
+            conn = get_db_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT sale_unique_id, calc_qty, quantity, calc_cost, item_cost, state_code_short, warehouse_name FROM sale")
+            sale_rows = [dict(r) for r in cursor.fetchall()]
+            conn.close()
             uploaded_mapping = {}
             for row in sale_rows:
                 uid = row.get('sale_unique_id')
@@ -1150,14 +1401,13 @@ def lookup_sale_quantities():
                         "state": row.get('state_code_short', ''),
                         "sellerName": row.get('warehouse_name', '')
                     }
-            # Check uploaded data for any keys not found in SQLite
             for key in keys:
                 if key not in mapping:
                     norm_key = str(key).strip().upper()
                     if norm_key in uploaded_mapping:
                         mapping[key] = uploaded_mapping[norm_key]
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[LOOKUP] Local query error: {str(e)}", flush=True)
 
         print(f"[LOOKUP] Found {len(mapping)} matches out of {len(keys)} keys.", flush=True)
         response = jsonify({"status": "Success", "mapping": mapping})
@@ -1218,8 +1468,12 @@ def lookup_purchase_quantities():
             print(f"[LOOKUP PURCHASE] SQLite query error: {str(db_err)}", flush=True)
 
         try:
-            stored = load_stored_data()
-            purchase_rows = stored.get('purchase', [])
+            conn = get_db_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT purchase_unique_id, calc_qty, quantity, calc_cost, item_cost, state_code_short, warehouse_name FROM purchase")
+            purchase_rows = [dict(r) for r in cursor.fetchall()]
+            conn.close()
             uploaded_mapping = {}
             for row in purchase_rows:
                 uid = row.get('purchase_unique_id')
@@ -1236,8 +1490,8 @@ def lookup_purchase_quantities():
                     norm_key = str(key).strip().upper()
                     if norm_key in uploaded_mapping:
                         mapping[key] = uploaded_mapping[norm_key]
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[LOOKUP PURCHASE] Local query error: {str(e)}", flush=True)
 
         print(f"[LOOKUP PURCHASE] Found {len(mapping)} matches out of {len(keys)} keys.", flush=True)
         response = jsonify({"status": "Success", "mapping": mapping})
@@ -1248,7 +1502,6 @@ def lookup_purchase_quantities():
         response = jsonify({"status": "Error", "message": str(e)})
         response.headers.add("Access-Control-Allow-Origin", "*")
         return response, 500
-
 
 @app.route('/api/get-available-sheets', methods=['GET', 'OPTIONS'])
 def get_available_sheets():
@@ -1488,11 +1741,16 @@ def export_returns():
                 'sheet_name': db_sheet
             })
 
-        # Merge with locally uploaded data
+        # Merge with locally uploaded data from SQLite
         try:
-            stored = load_stored_data()
-            local_sales = stored.get('sale', [])
-            local_purchases = stored.get('purchase', [])
+            conn = get_db_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM sale")
+            local_sales = [dict(r) for r in cursor.fetchall()]
+            cursor.execute("SELECT * FROM purchase")
+            local_purchases = [dict(r) for r in cursor.fetchall()]
+            conn.close()
             
             for row in local_sales:
                 db_sheet = row.get('sheet_name', get_financial_year())
@@ -1609,38 +1867,33 @@ def upload_files():
             file_paths['purchase_summary']
         )
         
-        # Load existing stored data
-        stored = load_stored_data()
+        # Save merged data persistently inside SQLite database
+        sale_new, sale_dups, purchase_new, purchase_dups = save_new_data_sqlite(new_sale_data, new_purchase_data)
         
-        # Merge with deduplication using UNIQUE IDs
-        merged_sale, sale_ids, sale_new, sale_dups = merge_with_dedup(
-            stored['sale'], new_sale_data,
-            stored['sale_ids'], 'sale_unique_id'
-        )
+        # Clean up uploaded files to save disk space
+        for path in file_paths.values():
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+                
+        # Count total rows
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM sale")
+        sale_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM purchase")
+        purchase_count = cursor.fetchone()[0]
+        conn.close()
         
-        merged_purchase, purchase_ids, purchase_new, purchase_dups = merge_with_dedup(
-            stored['purchase'], new_purchase_data,
-            stored['purchase_ids'], 'purchase_unique_id'
-        )
-        
-        # Save merged data persistently
-        stored_data = {
-            'sale': merged_sale,
-            'purchase': merged_purchase,
-            'sale_ids': sale_ids,
-            'purchase_ids': purchase_ids,
-        }
-        save_stored_data(stored_data)
-        
-
-        # Return preview (first 100 rows)
-        preview_sale = merged_sale[:100]
-        preview_purchase = merged_purchase[:100]
+        # Return previews (first 100 rows)
+        preview_sale = get_rows_as_dicts('sale', limit=100)
+        preview_purchase = get_rows_as_dicts('purchase', limit=100)
         
         return jsonify({
             'success': True,
-            'sale_count': len(merged_sale),
-            'purchase_count': len(merged_purchase),
+            'sale_count': sale_count,
+            'purchase_count': purchase_count,
             'sale_new': sale_new,
             'sale_duplicates': sale_dups,
             'purchase_new': purchase_new,
@@ -1649,7 +1902,6 @@ def upload_files():
             'sale_preview': preview_sale,
             'purchase_preview': preview_purchase,
         })
-    
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -1659,17 +1911,18 @@ def upload_files():
 def export_file():
     """Export processed data as Excel."""
     try:
-        # Try persistent store first, then temp
-        stored = load_stored_data()
-        if stored['sale'] or stored['purchase']:
-            sale_data = stored['sale']
-            purchase_data = stored['purchase']
-        else:
-            data_path = os.path.join(app.config['UPLOAD_FOLDER'], 'processed_data.pkl')
-            if not os.path.exists(data_path):
-                return jsonify({'error': 'No processed data. Please upload files first.'}), 400
-            with open(data_path, 'rb') as f:
-                sale_data, purchase_data = pickle.load(f)
+        # Fetch all records from SQLite
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sale ORDER BY no ASC")
+        sale_data = [dict(r) for r in cursor.fetchall()]
+        cursor.execute("SELECT * FROM purchase ORDER BY no ASC")
+        purchase_data = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        
+        if not sale_data and not purchase_data:
+            return jsonify({'error': 'No processed data. Please upload files first.'}), 400
         
         fy = get_financial_year()
         output_path = os.path.join(app.config['UPLOAD_FOLDER'], f'AJIO_MYNTRA_FLIPKART_{fy}_Output.xlsx')
@@ -1681,7 +1934,6 @@ def export_file():
             download_name=f'AJIO_MYNTRA_FLIPKART_Sale_Purchase_{fy}.xlsx',
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
-    
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -1691,28 +1943,26 @@ def export_file():
 def preview_more():
     """Get more rows for preview."""
     try:
-        # Try persistent store first
-        stored = load_stored_data()
-        if stored['sale'] or stored['purchase']:
-            sale_data = stored['sale']
-            purchase_data = stored['purchase']
-        else:
-            data_path = os.path.join(app.config['UPLOAD_FOLDER'], 'processed_data.pkl')
-            if not os.path.exists(data_path):
-                return jsonify({'error': 'No data available'}), 400
-            with open(data_path, 'rb') as f:
-                sale_data, purchase_data = pickle.load(f)
-        
         offset = int(request.args.get('offset', 0))
         limit = int(request.args.get('limit', 100))
         
+        sale_data = get_rows_as_dicts('sale', limit=limit, offset=offset)
+        purchase_data = get_rows_as_dicts('purchase', limit=limit, offset=offset)
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM sale")
+        sale_total = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM purchase")
+        purchase_total = cursor.fetchone()[0]
+        conn.close()
+        
         return jsonify({
-            'sale_data': sale_data[offset:offset + limit],
-            'purchase_data': purchase_data[offset:offset + limit],
-            'sale_total': len(sale_data),
-            'purchase_total': len(purchase_data),
+            'sale_data': sale_data,
+            'purchase_data': purchase_data,
+            'sale_total': sale_total,
+            'purchase_total': purchase_total,
         })
-    
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -1720,39 +1970,59 @@ def preview_more():
 @app.route('/status', methods=['GET'])
 def status():
     """Get current data status."""
-    stored = load_stored_data()
-    return jsonify({
-        'sale_count': len(stored['sale']),
-        'purchase_count': len(stored['purchase']),
-        'financial_year': get_financial_year(),
-        'has_data': bool(stored['sale'] or stored['purchase']),
-    })
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM sale")
+        sale_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM purchase")
+        purchase_count = cursor.fetchone()[0]
+        conn.close()
+        
+        return jsonify({
+            'sale_count': sale_count,
+            'purchase_count': purchase_count,
+            'financial_year': get_financial_year(),
+            'has_data': bool(sale_count or purchase_count),
+        })
+    except Exception:
+        return jsonify({
+            'sale_count': 0,
+            'purchase_count': 0,
+            'financial_year': get_financial_year(),
+            'has_data': False,
+        })
 
 
 @app.route('/clear', methods=['POST'])
 def clear_data():
     """Clear all stored data (fresh start)."""
     try:
-        empty_store = {'sale': [], 'purchase': [], 'sale_ids': set(), 'purchase_ids': set()}
-        save_stored_data(empty_store)
-
-        data_path = os.path.join(app.config['UPLOAD_FOLDER'], 'processed_data.pkl')
+        conn = get_db_connection()
+        conn.execute("DELETE FROM sale")
+        conn.execute("DELETE FROM purchase")
+        conn.execute("DROP TABLE IF EXISTS sync_sale_temp")
+        conn.execute("DROP TABLE IF EXISTS sync_purchase_temp")
+        conn.commit()
+        conn.close()
+        
+        # Also clean up output excels
         try:
-            if os.path.exists(data_path):
-                os.remove(data_path)
-        except OSError:
-            with open(data_path, 'wb') as f:
-                pickle.dump(([], []), f)
-
+            for f in os.listdir(app.config['UPLOAD_FOLDER']):
+                if f.endswith('.xlsx') or f.endswith('.pkl'):
+                    os.remove(os.path.join(app.config['UPLOAD_FOLDER'], f))
+        except Exception:
+            pass
+            
         return jsonify({'success': True, 'message': 'All data cleared!'})
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/get-sync-data', methods=['POST'])
-def get_sync_data():
-    """Get processed and deduplicated data prepared for Google Sheets sync."""
+@app.route('/api/prepare-sync', methods=['POST'])
+def prepare_sync():
+    """Prepare sync by filtering local data against sheets unique IDs and storing in temp tables."""
     try:
         req_data = request.json or {}
         web_app_url = req_data.get('webAppUrl')
@@ -1764,52 +2034,172 @@ def get_sync_data():
         if not sheet_name:
             return jsonify({'error': 'Target Sheet Name is required'}), 400
             
-        stored = load_stored_data()
-        sale_data = [dict(row) for row in stored['sale']]
-        purchase_data = [dict(row) for row in stored['purchase']]
-        
-        if not sale_data and not purchase_data:
-            return jsonify({'error': 'No data processed yet. Please upload files first.'}), 400
-            
-        import requests
-        from urllib.parse import quote
+        # Get all local rows from SQLite
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sale ORDER BY no ASC")
+        sale_data = [dict(r) for r in cursor.fetchall()]
+        cursor.execute("SELECT * FROM purchase ORDER BY no ASC")
+        purchase_data = [dict(r) for r in cursor.fetchall()]
         
         original_sale_count = len(sale_data)
         original_purchase_count = len(purchase_data)
         skipped_sale = 0
         skipped_purchase = 0
         
+        existing_sale_ids = set()
+        existing_purchase_ids = set()
+        
         if mode == 'append':
             try:
+                # Call getExistingUniqueIds from Google Sheets Web App once
+                from urllib.parse import quote
                 url = f"{web_app_url}?action=getExistingUniqueIds&sheetName={quote(sheet_name)}"
-                res = requests.get(url, allow_redirects=False)
+                res = requests.get(url, allow_redirects=False, timeout=120)
                 if res.status_code in [302, 307, 308]:
                     redirect_url = res.headers.get('Location')
-                    res = requests.get(redirect_url)
+                    res = requests.get(redirect_url, timeout=120)
                 
                 if res.status_code == 200:
                     res_data = res.json()
                     if res_data.get('success'):
                         existing_sale_ids = set(str(uid) for uid in res_data.get('saleIds', []))
                         existing_purchase_ids = set(str(uid) for uid in res_data.get('purchaseIds', []))
-                        
-                        sale_filtered = [row for row in sale_data if str(row.get('sale_unique_id', '')) not in existing_sale_ids]
-                        purchase_filtered = [row for row in purchase_data if str(row.get('purchase_unique_id', '')) not in existing_purchase_ids]
-                        
-                        skipped_sale = len(sale_data) - len(sale_filtered)
-                        skipped_purchase = len(purchase_data) - len(purchase_filtered)
-                        
-                        sale_data = sale_filtered
-                        purchase_data = purchase_filtered
-                        
-                        for idx, row in enumerate(sale_data):
-                            row['no'] = len(existing_sale_ids) + idx + 1
-                        for idx, row in enumerate(purchase_data):
-                            row['no'] = len(existing_purchase_ids) + idx + 1
             except Exception as e:
-                print(f"Error fetching unique IDs: {str(e)}")
+                print(f"Error fetching unique IDs from sheet: {str(e)}", flush=True)
+                # Fallback: check SQLite cache
+                try:
+                    cache_conn = sqlite3.connect(_CACHE_DB_PATH)
+                    cache_cursor = cache_conn.cursor()
+                    cache_cursor.execute("SELECT key FROM sale_cache WHERE sheet_name = ?", (sheet_name,))
+                    existing_sale_ids = {str(r[0]) for r in cache_cursor.fetchall()}
+                    cache_cursor.execute("SELECT key FROM purchase_cache WHERE sheet_name = ?", (sheet_name,))
+                    existing_purchase_ids = {str(r[0]) for r in cache_cursor.fetchall()}
+                    cache_conn.close()
+                except Exception as cache_err:
+                    print(f"Fallback cache query failed: {str(cache_err)}", flush=True)
+                    
+        # Filter rows
+        sale_filtered = []
+        for row in sale_data:
+            uid = str(row.get('sale_unique_id', ''))
+            if mode == 'append' and uid in existing_sale_ids:
+                skipped_sale += 1
+            else:
+                sale_filtered.append(row)
                 
-        # Map dict lists to 2D lists matching Google Sheet column layouts
+        purchase_filtered = []
+        for row in purchase_data:
+            uid = str(row.get('purchase_unique_id', ''))
+            if mode == 'append' and uid in existing_purchase_ids:
+                skipped_purchase += 1
+            else:
+                purchase_filtered.append(row)
+                
+        # Re-number the appended rows starting after the existing counts
+        existing_sale_count = len(existing_sale_ids)
+        existing_purchase_count = len(existing_purchase_ids)
+        
+        for idx, row in enumerate(sale_filtered):
+            row['no'] = existing_sale_count + idx + 1
+        for idx, row in enumerate(purchase_filtered):
+            row['no'] = existing_purchase_count + idx + 1
+            
+        # Write to temporary tables in local_store.db
+        conn.execute("DROP TABLE IF EXISTS sync_sale_temp")
+        conn.execute("DROP TABLE IF EXISTS sync_purchase_temp")
+        conn.execute("CREATE TABLE sync_sale_temp AS SELECT * FROM sale WHERE 1=0")
+        conn.execute("CREATE TABLE sync_purchase_temp AS SELECT * FROM purchase WHERE 1=0")
+        
+        sale_keys = [
+            'no', 'invoice_no', 'type', 'invoice_date', 'warehouse_name',
+            'warehouse_code', 'gst_no', 'order_id', 'item_asin', 'item_sku',
+            'item_name', 'hsn_number', 'quantity', 'item_cost', 'gross',
+            'igst', 'cgst', 'sgst', 'igst_amt', 'cgst_amt', 'sgst_amt',
+            'invoice', 'reason', 'zoho_status', 'invoice_id', 'state_code',
+            'sale_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+            'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+            'calc_cgst_amt', 'calc_sgst_amt', 'calc_invoice', 'state_code_short', 'sheet_name'
+        ]
+        
+        purchase_keys = [
+            'no', 'invoice_no', 'warehouse_name', 'warehouse_code', 'gst_no',
+            'order_id', 'item_asin', 'item_sku', 'item_name', 'hsn_number',
+            'quantity', 'item_cost', 'gross', 'igst', 'cgst', 'sgst',
+            'igst_amt', 'cgst_amt', 'sgst_amt', 'invoice',
+            'purchase_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+            'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+            'calc_cgst_amt', 'calc_sgst_amt', 'calc_total_amt', 'sheet_name'
+        ]
+        
+        if sale_filtered:
+            placeholders = ','.join(['?' for _ in sale_keys])
+            conn.executemany(f"INSERT INTO sync_sale_temp ({','.join(sale_keys)}) VALUES ({placeholders})", 
+                             [tuple(row.get(k, '') for k in sale_keys) for row in sale_filtered])
+            
+        if purchase_filtered:
+            placeholders = ','.join(['?' for _ in purchase_keys])
+            conn.executemany(f"INSERT INTO sync_purchase_temp ({','.join(purchase_keys)}) VALUES ({placeholders})", 
+                             [tuple(row.get(k, '') for k in purchase_keys) for row in purchase_filtered])
+            
+        conn.commit()
+        
+        cursor.execute("SELECT COUNT(*) FROM sync_sale_temp")
+        to_sync_sale = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM sync_purchase_temp")
+        to_sync_purchase = cursor.fetchone()[0]
+        conn.close()
+        
+        # Free memory
+        del sale_data, purchase_data, sale_filtered, purchase_filtered
+        import gc
+        gc.collect()
+        
+        return jsonify({
+            'success': True,
+            'originalSale': original_sale_count,
+            'originalPurchase': original_purchase_count,
+            'skippedSale': skipped_sale,
+            'skippedPurchase': skipped_purchase,
+            'toSyncSale': to_sync_sale,
+            'toSyncPurchase': to_sync_purchase,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/get-sync-chunk', methods=['GET'])
+def get_sync_chunk():
+    """Retrieve a paginated chunk of sync data from temp tables as 2D lists."""
+    try:
+        offset = int(request.args.get('offset', 0))
+        limit = int(request.args.get('limit', 2000))
+        
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Verify if tables exist
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sync_sale_temp'")
+        has_sale = cursor.fetchone() is not None
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sync_purchase_temp'")
+        has_purchase = cursor.fetchone() is not None
+        
+        sale_rows = []
+        if has_sale:
+            cursor.execute("SELECT * FROM sync_sale_temp ORDER BY no ASC LIMIT ? OFFSET ?", (limit, offset))
+            sale_rows = [dict(r) for r in cursor.fetchall()]
+            
+        purchase_rows = []
+        if has_purchase:
+            cursor.execute("SELECT * FROM sync_purchase_temp ORDER BY no ASC LIMIT ? OFFSET ?", (limit, offset))
+            purchase_rows = [dict(r) for r in cursor.fetchall()]
+            
+        conn.close()
+        
+        # Map to 2D list format matching Google Sheets Columns
         sale_keys = [
             'no', 'invoice_no', 'type', 'invoice_date', 'warehouse_name',
             'warehouse_code', 'gst_no', 'order_id', 'item_asin', 'item_sku',
@@ -1831,15 +2221,88 @@ def get_sync_data():
             'calc_cgst_amt', 'calc_sgst_amt', 'calc_total_amt'
         ]
         
-        sale_rows_2d = [[row.get(k, '') for k in sale_keys] for row in sale_data]
-        purchase_rows_2d = [[row.get(k, '') for k in purchase_keys] for row in purchase_data]
+        sale_rows_2d = [[row.get(k, '') for k in sale_keys] for row in sale_rows]
+        purchase_rows_2d = [[row.get(k, '') for k in purchase_keys] for row in purchase_rows]
+        
+        # Free memory
+        del sale_rows, purchase_rows
+        import gc
+        gc.collect()
+        
+        return jsonify({
+            'success': True,
+            'saleRows': sale_rows_2d,
+            'purchaseRows': purchase_rows_2d
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/get-sync-data', methods=['POST'])
+def get_sync_data():
+    """Fallback get-sync-data using SQLite (returns all sync rows)."""
+    try:
+        req_data = request.json or {}
+        web_app_url = req_data.get('webAppUrl')
+        sheet_name = req_data.get('sheetName')
+        mode = req_data.get('mode', 'append')
+        
+        # Call prepare_sync logic and fetch all rows from temp tables
+        # This keeps compatibility with anything expecting this endpoint
+        # but loads from SQLite.
+        prepare_res = prepare_sync()
+        if prepare_res.status_code != 200:
+            return prepare_res
+            
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM sync_sale_temp ORDER BY no ASC")
+        sale_rows = [dict(r) for r in cursor.fetchall()]
+        cursor.execute("SELECT * FROM sync_purchase_temp ORDER BY no ASC")
+        purchase_rows = [dict(r) for r in cursor.fetchall()]
+        
+        cursor.execute("SELECT COUNT(*) FROM sale")
+        original_sale = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM purchase")
+        original_purchase = cursor.fetchone()[0]
+        conn.close()
+        
+        sale_keys = [
+            'no', 'invoice_no', 'type', 'invoice_date', 'warehouse_name',
+            'warehouse_code', 'gst_no', 'order_id', 'item_asin', 'item_sku',
+            'item_name', 'hsn_number', 'quantity', 'item_cost', 'gross',
+            'igst', 'cgst', 'sgst', 'igst_amt', 'cgst_amt', 'sgst_amt',
+            'invoice', 'reason', 'zoho_status', 'invoice_id', 'state_code',
+            'sale_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+            'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+            'calc_cgst_amt', 'calc_sgst_amt', 'calc_invoice', 'state_code_short'
+        ]
+        
+        purchase_keys = [
+            'no', 'invoice_no', 'warehouse_name', 'warehouse_code', 'gst_no',
+            'order_id', 'item_asin', 'item_sku', 'item_name', 'hsn_number',
+            'quantity', 'item_cost', 'gross', 'igst', 'cgst', 'sgst',
+            'igst_amt', 'cgst_amt', 'sgst_amt', 'invoice',
+            'purchase_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+            'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+            'calc_cgst_amt', 'calc_sgst_amt', 'calc_total_amt'
+        ]
+        
+        sale_rows_2d = [[row.get(k, '') for k in sale_keys] for row in sale_rows]
+        purchase_rows_2d = [[row.get(k, '') for k in purchase_keys] for row in purchase_rows]
+        
+        skipped_sale = original_sale - len(sale_rows)
+        skipped_purchase = original_purchase - len(purchase_rows)
         
         return jsonify({
             'success': True,
             'saleRows': sale_rows_2d,
             'purchaseRows': purchase_rows_2d,
-            'originalSale': original_sale_count,
-            'originalPurchase': original_purchase_count,
+            'originalSale': original_sale,
+            'originalPurchase': original_purchase,
             'skippedSale': skipped_sale,
             'skippedPurchase': skipped_purchase,
             'toSyncSale': len(sale_rows_2d),
@@ -1852,84 +2315,21 @@ def get_sync_data():
 
 @app.route('/sync-sheet', methods=['POST'])
 def sync_sheet():
-    """Sync stored data to Google Sheet via the Google Web App URL."""
+    """Fallback sync-sheet using SQLite."""
     try:
         req_data = request.json or {}
         web_app_url = req_data.get('webAppUrl')
         sheet_name = req_data.get('sheetName')
-        mode = req_data.get('mode', 'append')  # 'append' or 'overwrite'
+        mode = req_data.get('mode', 'append')
         
-        if not web_app_url:
-            return jsonify({'error': 'Google Web App URL is required'}), 400
-        if not sheet_name:
-            return jsonify({'error': 'Target Sheet Name is required'}), 400
+        sync_data_res = get_sync_data()
+        if sync_data_res.status_code != 200:
+            return sync_data_res
             
-        # Load the stored data
-        stored = load_stored_data()
-        sale_data = [dict(row) for row in stored['sale']]
-        purchase_data = [dict(row) for row in stored['purchase']]
+        sync_data = sync_data_res.json
+        sale_rows_2d = sync_data.get('saleRows', [])
+        purchase_rows_2d = sync_data.get('purchaseRows', [])
         
-        if not sale_data and not purchase_data:
-            return jsonify({'error': 'No data processed yet. Please upload files first.'}), 400
-
-        import requests
-        from urllib.parse import quote
-
-        # If in append mode, fetch existing unique IDs to avoid duplication in Google Sheets
-        if mode == 'append':
-            try:
-                # Call getExistingUniqueIds from Google Sheets Web App
-                url = f"{web_app_url}?action=getExistingUniqueIds&sheetName={quote(sheet_name)}"
-                res = requests.get(url, allow_redirects=False)
-                if res.status_code in [302, 307, 308]:
-                    redirect_url = res.headers.get('Location')
-                    res = requests.get(redirect_url)
-                
-                if res.status_code == 200:
-                    res_data = res.json()
-                    if res_data.get('success'):
-                        existing_sale_ids = set(str(uid) for uid in res_data.get('saleIds', []))
-                        existing_purchase_ids = set(str(uid) for uid in res_data.get('purchaseIds', []))
-                        
-                        # Filter out rows that already exist in the sheet
-                        sale_data = [row for row in sale_data if str(row.get('sale_unique_id', '')) not in existing_sale_ids]
-                        purchase_data = [row for row in purchase_data if str(row.get('purchase_unique_id', '')) not in existing_purchase_ids]
-                        
-                        # Re-number the appended rows starting after the existing counts
-                        for idx, row in enumerate(sale_data):
-                            row['no'] = len(existing_sale_ids) + idx + 1
-                        for idx, row in enumerate(purchase_data):
-                            row['no'] = len(existing_purchase_ids) + idx + 1
-            except Exception as e:
-                # Log the error but proceed with default append if it fails
-                print(f"Error fetching unique IDs for append deduplication: {str(e)}")
-            
-        # Map dict lists to 2D lists matching Google Sheet column layouts
-        sale_keys = [
-            'no', 'invoice_no', 'type', 'invoice_date', 'warehouse_name',
-            'warehouse_code', 'gst_no', 'order_id', 'item_asin', 'item_sku',
-            'item_name', 'hsn_number', 'quantity', 'item_cost', 'gross',
-            'igst', 'cgst', 'sgst', 'igst_amt', 'cgst_amt', 'sgst_amt',
-            'invoice', 'reason', 'zoho_status', 'invoice_id', 'state_code',
-            'sale_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
-            'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
-            'calc_cgst_amt', 'calc_sgst_amt', 'calc_invoice', 'state_code_short'
-        ]
-        
-        purchase_keys = [
-            'no', 'invoice_no', 'warehouse_name', 'warehouse_code', 'gst_no',
-            'order_id', 'item_asin', 'item_sku', 'item_name', 'hsn_number',
-            'quantity', 'item_cost', 'gross', 'igst', 'cgst', 'sgst',
-            'igst_amt', 'cgst_amt', 'sgst_amt', 'invoice',
-            'purchase_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
-            'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
-            'calc_cgst_amt', 'calc_sgst_amt', 'calc_total_amt'
-        ]
-        
-        sale_rows_2d = [[row.get(k, '') for k in sale_keys] for row in sale_data]
-        purchase_rows_2d = [[row.get(k, '') for k in purchase_keys] for row in purchase_data]
-        
-        # Prepare the payload for Google Apps Script Web App
         payload = {
             'action': 'writeData',
             'sheetName': sheet_name,
@@ -1938,9 +2338,6 @@ def sync_sheet():
             'isAppend': (mode == 'append')
         }
         
-        # Call the Google Web App
-        import requests
-        # Manually handle 302 redirects to preserve POST method
         response = requests.post(web_app_url, json=payload, allow_redirects=False)
         if response.status_code in [302, 307, 308]:
             redirect_url = response.headers.get('Location')
@@ -1959,11 +2356,9 @@ def sync_sheet():
             'saleRows': result.get('saleRows', 0),
             'purchaseRows': result.get('purchaseRows', 0)
         })
-        
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
-
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

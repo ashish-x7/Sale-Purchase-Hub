@@ -792,8 +792,8 @@ async function startSyncToGoogleSheets() {
     showGlobalLoader('Preparing Sync', 'Fetching and deduplicating data...');
     
     try {
-        // Fetch deduplicated and formatted rows from local backend
-        const syncRes = await fetch('/get-sync-data', {
+        // Fetch deduplicated counts from local backend (creates temp tables)
+        const syncRes = await fetch('/api/prepare-sync', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ webAppUrl: WEB_APP_URL, sheetName, mode })
@@ -801,10 +801,10 @@ async function startSyncToGoogleSheets() {
         const syncData = await syncRes.json();
         if (!syncRes.ok || syncData.error) throw new Error(syncData.error || 'Deduplication failed');
         
-        const saleRows = syncData.saleRows || [];
-        const purchaseRows = syncData.purchaseRows || [];
+        const toSyncSale = syncData.toSyncSale || 0;
+        const toSyncPurchase = syncData.toSyncPurchase || 0;
         
-        const maxRows = Math.max(saleRows.length, purchaseRows.length);
+        const maxRows = Math.max(toSyncSale, toSyncPurchase);
         if (maxRows === 0) {
             hideGlobalLoader();
             if (progBar) progBar.style.display = 'none';
@@ -826,14 +826,18 @@ async function startSyncToGoogleSheets() {
         
         for (let i = 1; i <= totalBatches; i++) {
             const startIdx = (i - 1) * chunkSize;
-            const endIdx = i * chunkSize;
-            
-            const saleChunk = saleRows.slice(startIdx, endIdx);
-            const purchaseChunk = purchaseRows.slice(startIdx, endIdx);
             
             const percent = Math.round((i / totalBatches) * 100);
             showGlobalLoader('Syncing to Google Sheets', `Uploading Batch ${i} of ${totalBatches}... (${percent}%)`);
             if (progFill) progFill.style.width = percent + '%';
+            
+            // Fetch chunk from SQLite
+            const chunkRes = await fetch(`/api/get-sync-chunk?offset=${startIdx}&limit=${chunkSize}`);
+            const chunkData = await chunkRes.json();
+            if (!chunkRes.ok || chunkData.error) throw new Error(chunkData.error || `Failed to load batch ${i}`);
+            
+            const saleChunk = chunkData.saleRows || [];
+            const purchaseChunk = chunkData.purchaseRows || [];
             
             // Check action type: Overwrite + First batch should clear sheet.
             const actionType = (mode === 'overwrite' && i === 1) ? 'writeData' : 'appendBatch';
