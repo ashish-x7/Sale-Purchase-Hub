@@ -400,6 +400,537 @@ def safe_float(value, default=0):
         return default
 
 
+def stream_xls_file(filepath):
+    """Yield rows from .xls file one by one to save memory."""
+    wb = xlrd.open_workbook(filepath, ignore_workbook_corruption=True)
+    ws = wb.sheet_by_index(0)
+    
+    headers = []
+    seen = {}
+    for c in range(ws.ncols):
+        h = str(ws.cell_value(1, c)).strip()
+        if not h or h == '':
+            h = f'Col_{c}'
+        if h in seen:
+            seen[h] += 1
+            h = f"{h}_{seen[h]}"
+        else:
+            seen[h] = 1
+        headers.append(h)
+        
+    for r in range(2, ws.nrows):
+        row_data = {}
+        for c in range(ws.ncols):
+            cell_value = ws.cell_value(r, c)
+            if ws.cell_type(r, c) == xlrd.XL_CELL_DATE:
+                try:
+                    date_tuple = xlrd.xldate_as_tuple(cell_value, wb.datemode)
+                    cell_value = f'{date_tuple[2]:02d}/{date_tuple[1]:02d}/{date_tuple[0]}'
+                except Exception:
+                    pass
+            row_data[headers[c]] = cell_value
+        yield row_data
+
+
+def stream_xlsx_file(filepath):
+    """Yield rows from .xlsx file one by one to save memory."""
+    wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+    ws = wb.active if wb.active is not None else wb.worksheets[0]
+    
+    headers = []
+    seen = {}
+    for r_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+        if r_idx == 2:
+            for c_idx, cell_value in enumerate(row):
+                h = cell_value if cell_value is not None else f'Col_{c_idx + 1}'
+                h = str(h).strip()
+                if h in seen:
+                    seen[h] += 1
+                    h = f"{h}_{seen[h]}"
+                else:
+                    seen[h] = 1
+                headers.append(h)
+        elif r_idx >= 3:
+            if not any(cell_value is not None and str(cell_value).strip() != '' for cell_value in row):
+                continue
+            row_data = {}
+            for c_idx, cell_value in enumerate(row):
+                if c_idx < len(headers):
+                    row_data[headers[c_idx]] = cell_value
+                else:
+                    row_data[f'Col_{c_idx + 1}'] = cell_value
+            yield row_data
+
+
+def stream_file(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext == '.xls':
+        return stream_xls_file(filepath)
+    elif ext == '.xlsx':
+        return stream_xlsx_file(filepath)
+    else:
+        raise Exception(f'Unsupported file format: {ext}')
+
+
+def build_sale_summary_lookup_streaming(filepath):
+    lookup = {}
+    for row in stream_file(filepath):
+        key = None
+        for possible_key in ['New Invoice No.', 'New Invoice No', 'New invoice No.']:
+            if possible_key in row:
+                key = safe_str(row[possible_key])
+                break
+        if key:
+            lookup[key] = {
+                'invoice_type': safe_str(row.get('Invoice Type', '')),
+                'invoice_id': safe_str(row.get('Invoice No', row.get('Invoice No.', ''))),
+                'state_code': safe_str(row.get('State Code', '')),
+                'channel': safe_str(row.get('Channel', '')),
+            }
+    return lookup
+
+
+def build_purchase_summary_lookup_streaming(filepath):
+    lookup = {}
+    for row in stream_file(filepath):
+        key = None
+        for possible_key in ['Invoice No.', 'Invoice No', 'Invoice Number']:
+            if possible_key in row:
+                key = safe_str(row[possible_key])
+                break
+        if key:
+            lookup[key] = {
+                'invoice_type': safe_str(row.get('Invoice Type', '')),
+                'order_no': safe_str(row.get('Order No', '')),
+            }
+    return lookup
+
+
+def process_and_save_streaming(file_paths):
+    """Process Excel files in a streaming fashion, write directly to SQLite, and return stats."""
+    import gc
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # ─── 1. Get initial database counts ───
+    cursor.execute("SELECT COUNT(*) FROM sale")
+    init_sale_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM purchase")
+    init_purchase_count = cursor.fetchone()[0]
+    
+    # ─── 2. Build lookups ───
+    sale_lookup = build_sale_summary_lookup_streaming(file_paths['sale_summary'])
+    purchase_lookup = build_purchase_summary_lookup_streaming(file_paths['purchase_summary'])
+    
+    # ─── 3. Stream & Process Sales details ───
+    cursor.execute("SELECT COALESCE(MAX(no), 0) FROM sale")
+    current_sale_no = cursor.fetchone()[0]
+    
+    sale_keys = [
+        'no', 'invoice_no', 'type', 'invoice_date', 'warehouse_name',
+        'warehouse_code', 'gst_no', 'order_id', 'item_asin', 'item_sku',
+        'item_name', 'hsn_number', 'quantity', 'item_cost', 'gross',
+        'igst', 'cgst', 'sgst', 'igst_amt', 'cgst_amt', 'sgst_amt',
+        'invoice', 'reason', 'zoho_status', 'invoice_id', 'state_code',
+        'sale_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+        'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+        'calc_cgst_amt', 'calc_sgst_amt', 'calc_invoice', 'state_code_short', 'sheet_name'
+    ]
+    sale_placeholders = ','.join(['?' for _ in sale_keys])
+    sale_insert_sql = f"INSERT OR IGNORE INTO sale ({','.join(sale_keys)}) VALUES ({sale_placeholders})"
+    
+    attempted_sales = 0
+    sale_batch = []
+    fy_str = get_financial_year()
+    
+    for row in stream_file(file_paths['sale_details']):
+        invoice_no = safe_str(row.get('Invoice No', ''))
+        summary = sale_lookup.get(invoice_no, {})
+        
+        quantity = safe_float(row.get('Quantity', 0))
+        item_cost = safe_float(row.get('Item Cost', row.get('Item cost', 0)))
+        gross = safe_float(row.get('Gross', 0))
+        igst_rate = safe_float(row.get('IGST', 0))
+        cgst_rate = safe_float(row.get('CGST', 0))
+        sgst_rate = safe_float(row.get('SGST', 0))
+        igst_amt = safe_float(row.get('IGST Amt', 0))
+        cgst_amt = safe_float(row.get('CGST Amt', 0))
+        sgst_amt = safe_float(row.get('SGST Amt', 0))
+        invoice_val = safe_float(row.get('Invoice', 0))
+        
+        order_id = safe_str(row.get('Order ID', ''))
+        item_asin = safe_str(row.get('Item Asin', ''))
+        item_sku = safe_str(row.get('Item SKU', ''))
+        
+        sale_unique_id = f'{invoice_no}-{order_id}-{item_asin}-{item_sku}'
+        state_code_full = summary.get('state_code', '')
+        state_code_short = extract_state_short(state_code_full)
+        
+        calc_qty = quantity
+        calc_cost = item_cost
+        calc_gross = roundup2(calc_qty * calc_cost)
+        calc_igst = igst_rate
+        calc_cgst = cgst_rate
+        calc_sgst = sgst_rate
+        calc_igst_amt = roundup2(calc_gross * calc_igst / 100) if calc_igst else 0
+        calc_cgst_amt = roundup2(calc_gross * calc_cgst / 100) if calc_cgst else 0
+        calc_sgst_amt = roundup2(calc_gross * calc_sgst / 100) if calc_sgst else 0
+        calc_invoice = calc_gross + calc_igst + calc_cgst + calc_sgst
+        
+        current_sale_no += 1
+        attempted_sales += 1
+        
+        sale_dict = {
+            'no': current_sale_no,
+            'invoice_no': invoice_no,
+            'type': summary.get('invoice_type', ''),
+            'invoice_date': safe_str(row.get('Invoice Date', '')),
+            'warehouse_name': safe_str(row.get('Warehouse Name', '')),
+            'warehouse_code': safe_str(row.get('Warehouse Code', '')),
+            'gst_no': safe_str(row.get('GST No', '')),
+            'order_id': order_id,
+            'item_asin': item_asin,
+            'item_sku': item_sku,
+            'item_name': safe_str(row.get('Item Name', '')),
+            'hsn_number': safe_str(row.get('HSN Number', '')),
+            'quantity': quantity,
+            'item_cost': item_cost,
+            'gross': gross,
+            'igst': igst_rate,
+            'cgst': cgst_rate,
+            'sgst': sgst_rate,
+            'igst_amt': igst_amt,
+            'cgst_amt': cgst_amt,
+            'sgst_amt': sgst_amt,
+            'invoice': invoice_val,
+            'reason': safe_str(row.get('Reason', '')),
+            'zoho_status': safe_str(row.get('Zoho Status', '')),
+            'invoice_id': summary.get('invoice_id', ''),
+            'state_code': state_code_full,
+            'sale_unique_id': sale_unique_id,
+            'calc_qty': calc_qty,
+            'calc_cost': calc_cost,
+            'calc_gross': calc_gross,
+            'calc_igst': calc_igst,
+            'calc_cgst': calc_cgst,
+            'calc_sgst': calc_sgst,
+            'calc_igst_amt': calc_igst_amt,
+            'calc_cgst_amt': calc_cgst_amt,
+            'calc_sgst_amt': calc_sgst_amt,
+            'calc_invoice': roundup2(calc_invoice),
+            'state_code_short': state_code_short,
+            'sheet_name': fy_str
+        }
+        
+        sale_batch.append(tuple(sale_dict.get(k, '') for k in sale_keys))
+        if len(sale_batch) >= 1000:
+            cursor.executemany(sale_insert_sql, sale_batch)
+            sale_batch = []
+            
+    if sale_batch:
+        cursor.executemany(sale_insert_sql, sale_batch)
+        sale_batch = []
+        
+    conn.commit()
+    
+    # ─── 4. Reclaim Sales lookup RAM instantly ───
+    sale_lookup = None
+    gc.collect()
+    
+    # ─── 5. Stream & Process Purchase details ───
+    cursor.execute("SELECT COALESCE(MAX(no), 0) FROM purchase")
+    current_purchase_no = cursor.fetchone()[0]
+    
+    purchase_keys = [
+        'no', 'invoice_no', 'warehouse_name', 'warehouse_code', 'gst_no',
+        'order_id', 'item_asin', 'item_sku', 'item_name', 'hsn_number',
+        'quantity', 'item_cost', 'gross', 'igst', 'cgst', 'sgst',
+        'igst_amt', 'cgst_amt', 'sgst_amt', 'invoice',
+        'purchase_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+        'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+        'calc_cgst_amt', 'calc_sgst_amt', 'calc_total_amt', 'sheet_name'
+    ]
+    purchase_placeholders = ','.join(['?' for _ in purchase_keys])
+    purchase_insert_sql = f"INSERT OR IGNORE INTO purchase ({','.join(purchase_keys)}) VALUES ({purchase_placeholders})"
+    
+    attempted_purchases = 0
+    purchase_batch = []
+    
+    for row in stream_file(file_paths['purchase_details']):
+        invoice_no = safe_str(row.get('Invoice No', ''))
+        order_id = safe_str(row.get('Order ID', ''))
+        item_asin = safe_str(row.get('Item Asin', ''))
+        item_sku = safe_str(row.get('Item SKU', ''))
+        quantity = safe_float(row.get('Quantity', 0))
+        
+        item_cost = 0
+        if 'Quantity_2' in row:
+            item_cost = safe_float(row.get('Quantity_2', 0))
+        else:
+            item_cost_key = 'Item cost'
+            if item_cost_key not in row:
+                item_cost_key = 'Item Cost'
+            item_cost = safe_float(row.get(item_cost_key, 0))
+            if item_cost == 0:
+                for k, v in row.items():
+                    if k not in [item_cost_key] and 'cost' in k.lower():
+                        item_cost = safe_float(v)
+                        break
+                        
+        gross = safe_float(row.get('Gross', 0))
+        igst_rate = safe_float(row.get('IGST', 0))
+        cgst_rate = safe_float(row.get('CGST', 0))
+        sgst_rate = safe_float(row.get('SGST', 0))
+        igst_amt = safe_float(row.get('IGST Amt', 0))
+        cgst_amt = safe_float(row.get('CGST Amt', 0))
+        sgst_amt = safe_float(row.get('SGST Amt', 0))
+        invoice_val = safe_float(row.get('Invoice', 0))
+        
+        purchase_unique_id = f'{invoice_no}-{order_id}-{item_asin}-{item_sku}'
+        
+        calc_qty = quantity
+        calc_cost = item_cost
+        calc_gross = roundup2(calc_qty * calc_cost)
+        calc_igst = igst_rate
+        calc_cgst = cgst_rate
+        calc_sgst = sgst_rate
+        calc_igst_amt = roundup2(calc_gross * calc_igst / 100) if calc_igst else 0
+        calc_cgst_amt = roundup2(calc_gross * calc_cgst / 100) if calc_cgst else 0
+        calc_sgst_amt = roundup2(calc_gross * calc_sgst / 100) if calc_sgst else 0
+        calc_total_amt = roundup2(calc_gross + calc_igst_amt + calc_cgst_amt + calc_sgst_amt)
+        
+        current_purchase_no += 1
+        attempted_purchases += 1
+        
+        purchase_dict = {
+            'no': current_purchase_no,
+            'invoice_no': invoice_no,
+            'warehouse_name': safe_str(row.get('Warehouse Name', '')),
+            'warehouse_code': safe_str(row.get('Warehouse Code', '')),
+            'gst_no': safe_str(row.get('GST No', '')),
+            'order_id': order_id,
+            'item_asin': item_asin,
+            'item_sku': item_sku,
+            'item_name': safe_str(row.get('Item Name', '')),
+            'hsn_number': safe_str(row.get('HSN Number', '')),
+            'quantity': quantity,
+            'item_cost': item_cost,
+            'gross': gross,
+            'igst': igst_rate,
+            'cgst': cgst_rate,
+            'sgst': sgst_rate,
+            'igst_amt': igst_amt,
+            'cgst_amt': cgst_amt,
+            'sgst_amt': sgst_amt,
+            'invoice': invoice_val,
+            'purchase_unique_id': purchase_unique_id,
+            'calc_qty': calc_qty,
+            'calc_cost': calc_cost,
+            'calc_gross': calc_gross,
+            'calc_igst': calc_igst,
+            'calc_cgst': calc_cgst,
+            'calc_sgst': calc_sgst,
+            'calc_igst_amt': calc_igst_amt,
+            'calc_cgst_amt': calc_cgst_amt,
+            'calc_sgst_amt': calc_sgst_amt,
+            'calc_total_amt': calc_total_amt,
+            'sheet_name': fy_str
+        }
+        
+        purchase_batch.append(tuple(purchase_dict.get(k, '') for k in purchase_keys))
+        if len(purchase_batch) >= 1000:
+            cursor.executemany(purchase_insert_sql, purchase_batch)
+            purchase_batch = []
+            
+    if purchase_batch:
+        cursor.executemany(purchase_insert_sql, purchase_batch)
+        purchase_batch = []
+        
+    conn.commit()
+    
+    # ─── 6. Reclaim Purchase lookup RAM instantly ───
+    purchase_lookup = None
+    gc.collect()
+    
+    # ─── 7. Calculate final stats ───
+    cursor.execute("SELECT COUNT(*) FROM sale")
+    final_sale_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM purchase")
+    final_purchase_count = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    sale_new = final_sale_count - init_sale_count
+    sale_dups = attempted_sales - sale_new
+    
+    purchase_new = final_purchase_count - init_purchase_count
+    purchase_dups = attempted_purchases - purchase_new
+    
+    return {
+        'sale_count': final_sale_count,
+        'purchase_count': final_purchase_count,
+        'sale_new': sale_new,
+        'sale_duplicates': sale_dups,
+        'purchase_new': purchase_new,
+        'purchase_duplicates': purchase_dups
+    }
+
+
+def export_to_excel_streaming(output_path):
+    """Export combined data to Excel directly streaming rows to disk using write-only workbook."""
+    from openpyxl.cell import WriteOnlyCell
+    wb = openpyxl.Workbook(write_only=True)
+    fy = get_financial_year()
+    ws = wb.create_sheet(title=f'AJIO & MYNTRA SALE-PURCHASE {fy}')
+    
+    # Define styles
+    header_font = Font(name='Calibri', bold=True, size=12, color='FFFFFF')
+    sale_fill = PatternFill(start_color='1B5E20', end_color='1B5E20', fill_type='solid')
+    purchase_fill = PatternFill(start_color='0D47A1', end_color='0D47A1', fill_type='solid')
+    subheader_font = Font(name='Calibri', bold=True, size=10)
+    sale_subheader_fill = PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid')
+    purchase_subheader_fill = PatternFill(start_color='BBDEFB', end_color='BBDEFB', fill_type='solid')
+    thin_border = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'), bottom=Side(style='thin')
+    )
+    center_align = Alignment(horizontal='center', vertical='center')
+    
+    # ─── Row 1: Merged Headers ──────────────────────────────────────────
+    row1 = []
+    for col_idx in range(1, 72):
+        cell = WriteOnlyCell(ws, value=None)
+        cell.border = thin_border
+        
+        if col_idx <= 38:
+            cell.fill = sale_fill
+            if col_idx == 1:
+                cell.value = "SALE"
+                cell.font = header_font
+                cell.alignment = center_align
+        elif col_idx == 39:
+            pass
+        else:
+            cell.fill = purchase_fill
+            if col_idx == 40:
+                cell.value = "PURCHASE"
+                cell.font = header_font
+                cell.alignment = center_align
+        row1.append(cell)
+    ws.append(row1)
+    ws.merge_cells('A1:AL1')
+    ws.merge_cells('AN1:BR1')
+    
+    # ─── Row 2: Column Headers ──────────────────────────────────────────
+    sale_headers = [
+        'No.', 'Invoice No', 'TYPE', 'Invoice Date', 'Warehouse Name',
+        'Warehouse Code', 'GST No', 'Order ID', 'Item Asin', 'Item SKU',
+        'Item Name', 'HSN Number', 'Quantity', 'Item Cost', 'Gross',
+        'IGST', 'CGST', 'SGST', 'IGST Amt', 'CGST Amt', 'SGST Amt',
+        'Invoice', 'Reason', 'Zoho Status', 'invoice id', 'State Code',
+        'SALE UNIQUE ID', 'Quantity', 'Item Cost', 'Gross',
+        'IGST', 'CGST', 'SGST', 'IGST Amt', 'CGST Amt', 'SGST Amt',
+        'Invoice', 'STATE CODE'
+    ]
+    
+    purchase_headers = [
+        'No.', 'Invoice No', 'Warehouse Name', 'Warehouse Code', 'GST No',
+        'Order ID', 'Item Asin', 'Item SKU', 'Item Name', 'HSN Number',
+        'Quantity', 'Item cost', 'Gross', 'IGST', 'CGST', 'SGST',
+        'IGST Amt', 'CGST Amt', 'SGST Amt', 'Invoice',
+        'PURCHASE UNIQUE ID', 'Quantity', 'Item cost', 'Gross',
+        'IGST', 'CGST', 'SGST', 'IGST Amt', 'CGST Amt', 'SGST Amt',
+        'Total Amt'
+    ]
+    
+    row2 = []
+    for col_idx in range(1, 72):
+        cell = WriteOnlyCell(ws, value=None)
+        cell.border = thin_border
+        
+        if col_idx <= 38:
+            cell.fill = sale_subheader_fill
+            cell.font = subheader_font
+            cell.alignment = center_align
+            if col_idx <= len(sale_headers):
+                cell.value = sale_headers[col_idx - 1]
+        elif col_idx == 39:
+            pass
+        else:
+            cell.fill = purchase_subheader_fill
+            cell.font = subheader_font
+            cell.alignment = center_align
+            p_idx = col_idx - 40
+            if p_idx < len(purchase_headers):
+                cell.value = purchase_headers[p_idx]
+        row2.append(cell)
+    ws.append(row2)
+    
+    # ─── Data Rows ──────────────────────────────────────────────────────
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    cursor_sale = conn.cursor()
+    cursor_sale.execute("SELECT * FROM sale ORDER BY no ASC")
+    
+    cursor_purchase = conn.cursor()
+    cursor_purchase.execute("SELECT * FROM purchase ORDER BY no ASC")
+    
+    sale_keys = [
+        'no', 'invoice_no', 'type', 'invoice_date', 'warehouse_name',
+        'warehouse_code', 'gst_no', 'order_id', 'item_asin', 'item_sku',
+        'item_name', 'hsn_number', 'quantity', 'item_cost', 'gross',
+        'igst', 'cgst', 'sgst', 'igst_amt', 'cgst_amt', 'sgst_amt',
+        'invoice', 'reason', 'zoho_status', 'invoice_id', 'state_code',
+        'sale_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+        'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+        'calc_cgst_amt', 'calc_sgst_amt', 'calc_invoice', 'state_code_short'
+    ]
+    
+    purchase_keys = [
+        'no', 'invoice_no', 'warehouse_name', 'warehouse_code', 'gst_no',
+        'order_id', 'item_asin', 'item_sku', 'item_name', 'hsn_number',
+        'quantity', 'item_cost', 'gross', 'igst', 'cgst', 'sgst',
+        'igst_amt', 'cgst_amt', 'sgst_amt', 'invoice',
+        'purchase_unique_id', 'calc_qty', 'calc_cost', 'calc_gross',
+        'calc_igst', 'calc_cgst', 'calc_sgst', 'calc_igst_amt',
+        'calc_cgst_amt', 'calc_sgst_amt', 'calc_total_amt'
+    ]
+    
+    while True:
+        s_row = cursor_sale.fetchone()
+        p_row = cursor_purchase.fetchone()
+        
+        if s_row is None and p_row is None:
+            break
+            
+        row_cells = []
+        for col_idx in range(1, 72):
+            cell = WriteOnlyCell(ws, value=None)
+            cell.border = thin_border
+            
+            if col_idx <= 38:
+                if s_row is not None:
+                    k = sale_keys[col_idx - 1]
+                    cell.value = s_row[k]
+            elif col_idx == 39:
+                pass
+            else:
+                if p_row is not None:
+                    k = purchase_keys[col_idx - 40]
+                    cell.value = p_row[k]
+            row_cells.append(cell)
+        ws.append(row_cells)
+        
+    conn.close()
+    
+    for col in range(1, 72):
+        ws.column_dimensions[get_column_letter(col)].width = 15
+    ws.column_dimensions['K'].width = 40
+    ws.column_dimensions['AW'].width = 40
+    
+    wb.save(output_path)
+
+
 def safe_str(value, default=''):
     """Safely convert to string."""
     if value is None:
@@ -1843,9 +2374,9 @@ def index():
 @app.route('/upload', methods=['POST'])
 def upload_files():
     """Handle file uploads, process data, merge with existing, deduplicate."""
+    file_paths = {}
     try:
         required_files = ['sale_details', 'sale_summary', 'purchase_details', 'purchase_summary']
-        file_paths = {}
         
         for file_key in required_files:
             if file_key not in request.files:
@@ -1859,16 +2390,8 @@ def upload_files():
             file.save(filepath)
             file_paths[file_key] = filepath
         
-        # Process new uploaded files
-        new_sale_data, new_purchase_data = process_files(
-            file_paths['sale_details'],
-            file_paths['sale_summary'],
-            file_paths['purchase_details'],
-            file_paths['purchase_summary']
-        )
-        
-        # Save merged data persistently inside SQLite database
-        sale_new, sale_dups, purchase_new, purchase_dups = save_new_data_sqlite(new_sale_data, new_purchase_data)
+        # Process and save new uploaded files directly using streaming
+        stats = process_and_save_streaming(file_paths)
         
         # Clean up uploaded files to save disk space
         for path in file_paths.values():
@@ -1877,14 +2400,8 @@ def upload_files():
             except Exception:
                 pass
                 
-        # Count total rows
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM sale")
-        sale_count = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM purchase")
-        purchase_count = cursor.fetchone()[0]
-        conn.close()
+        # Force garbage collection to reclaim memory instantly
+        gc.collect()
         
         # Return previews (first 100 rows)
         preview_sale = get_rows_as_dicts('sale', limit=100)
@@ -1892,17 +2409,24 @@ def upload_files():
         
         return jsonify({
             'success': True,
-            'sale_count': sale_count,
-            'purchase_count': purchase_count,
-            'sale_new': sale_new,
-            'sale_duplicates': sale_dups,
-            'purchase_new': purchase_new,
-            'purchase_duplicates': purchase_dups,
+            'sale_count': stats['sale_count'],
+            'purchase_count': stats['purchase_count'],
+            'sale_new': stats['sale_new'],
+            'sale_duplicates': stats['sale_duplicates'],
+            'purchase_new': stats['purchase_new'],
+            'purchase_duplicates': stats['purchase_duplicates'],
             'financial_year': get_financial_year(),
             'sale_preview': preview_sale,
             'purchase_preview': preview_purchase,
         })
     except Exception as e:
+        # Clean up files in case of error as well!
+        for path in file_paths.values():
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        gc.collect()
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
@@ -1911,22 +2435,24 @@ def upload_files():
 def export_file():
     """Export processed data as Excel."""
     try:
-        # Fetch all records from SQLite
+        # Verify if we have any data
         conn = get_db_connection()
-        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM sale ORDER BY no ASC")
-        sale_data = [dict(r) for r in cursor.fetchall()]
-        cursor.execute("SELECT * FROM purchase ORDER BY no ASC")
-        purchase_data = [dict(r) for r in cursor.fetchall()]
+        cursor.execute("SELECT COUNT(*) FROM sale")
+        s_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM purchase")
+        p_count = cursor.fetchone()[0]
         conn.close()
         
-        if not sale_data and not purchase_data:
+        if s_count == 0 and p_count == 0:
             return jsonify({'error': 'No processed data. Please upload files first.'}), 400
         
         fy = get_financial_year()
         output_path = os.path.join(app.config['UPLOAD_FOLDER'], f'AJIO_MYNTRA_FLIPKART_{fy}_Output.xlsx')
-        export_to_excel(sale_data, purchase_data, output_path)
+        export_to_excel_streaming(output_path)
+        
+        # Force garbage collection to reclaim memory instantly
+        gc.collect()
         
         return send_file(
             output_path,
@@ -1935,6 +2461,7 @@ def export_file():
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
     except Exception as e:
+        gc.collect()
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 

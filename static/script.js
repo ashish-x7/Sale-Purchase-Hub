@@ -311,27 +311,70 @@ function updateHeaderStatus(s, p) {
 
 // ─── Auto Load ──────────────────────────────────────────────────────────
 async function loadExistingData() {
-    try {
-        const sRes = await fetch('/status');
-        const st = await sRes.json();
-        if (st.has_data) {
-            state.saleTotal = st.sale_count; state.purchaseTotal = st.purchase_count;
-            document.getElementById('sale-count').textContent = formatNumber(st.sale_count);
-            document.getElementById('purchase-count').textContent = formatNumber(st.purchase_count);
-            document.getElementById('total-count').textContent = formatNumber(st.sale_count + st.purchase_count);
-            if (st.financial_year) document.getElementById('fy-badge').textContent = `FY ${st.financial_year}`;
-
-            const pRes = await fetch(`/preview-more?offset=0&limit=${state.pageSize}`);
-            const pd = await pRes.json();
-            if (!pd.error) {
-                state.saleData = pd.sale_data||[]; state.purchaseData = pd.purchase_data||[];
-                state.saleOffset = state.saleData.length; state.purchaseOffset = state.purchaseData.length;
-                resultSection.classList.remove('hidden');
-                renderTable('sale');
-                updateHeaderStatus(st.sale_count, st.purchase_count);
-            }
+    const overlay = document.getElementById('wakeup-overlay');
+    const fill = document.getElementById('wakeup-progress-fill');
+    const percentSpan = document.getElementById('wakeup-progress-percent');
+    
+    let progress = 0;
+    let isAwake = false;
+    
+    // Smooth progress increment simulation
+    const interval = setInterval(() => {
+        if (isAwake) return;
+        if (progress < 95) {
+            progress += 1;
+            if (fill) fill.style.width = progress + '%';
+            if (percentSpan) percentSpan.textContent = progress;
         }
-    } catch(e) { console.log('No existing data:', e.message); }
+    }, 450); // Reaches 95% in about 42 seconds
+    
+    while (!isAwake) {
+        try {
+            console.log('[WAKEUP] Pinging server status...');
+            const sRes = await fetch('/status');
+            const st = await sRes.json();
+            
+            // Server responded successfully!
+            isAwake = true;
+            clearInterval(interval);
+            
+            // Fast forward progress bar to 100%
+            progress = 100;
+            if (fill) fill.style.width = '100%';
+            if (percentSpan) percentSpan.textContent = '100';
+            
+            // Wait 500ms to show 100% state, then hide
+            setTimeout(() => {
+                if (overlay) overlay.classList.add('hidden');
+            }, 500);
+            
+            // Process loaded data
+            if (st.has_data) {
+                state.saleTotal = st.sale_count; 
+                state.purchaseTotal = st.purchase_count;
+                document.getElementById('sale-count').textContent = formatNumber(st.sale_count);
+                document.getElementById('purchase-count').textContent = formatNumber(st.purchase_count);
+                document.getElementById('total-count').textContent = formatNumber(st.sale_count + st.purchase_count);
+                if (st.financial_year) document.getElementById('fy-badge').textContent = `FY ${st.financial_year}`;
+
+                const pRes = await fetch(`/preview-more?offset=0&limit=${state.pageSize}`);
+                const pd = await pRes.json();
+                if (!pd.error) {
+                    state.saleData = pd.sale_data||[]; 
+                    state.purchaseData = pd.purchase_data||[];
+                    state.saleOffset = state.saleData.length; 
+                    state.purchaseOffset = state.purchaseData.length;
+                    resultSection.classList.remove('hidden');
+                    renderTable('sale');
+                    updateHeaderStatus(st.sale_count, st.purchase_count);
+                }
+            }
+        } catch(e) {
+            console.log('[WAKEUP] Backend still sleeping or offline. Retrying in 3 seconds...', e.message);
+            // Wait 3 seconds before next ping attempt
+            await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+    }
 }
 loadExistingData();
 
@@ -544,25 +587,49 @@ async function downloadSelectedSheets() {
 
         for (let i = 0; i < selectedSheets.length; i++) {
             const sheetName = selectedSheets[i];
-            const res = await fetch(`${WEB_APP_URL}?action=getSheetData&sheetName=${encodeURIComponent(sheetName)}&startRow=3&numRows=100000`);
-            const data = await res.json();
-            if (!data.success) {
-                throw new Error(`Failed to load sheet: ${sheetName}`);
-            }
-
-            const percent = Math.round(((i + 0.5) / selectedSheets.length) * 100);
-            updateGlobalLoaderProgress(percent, `Downloading ${sheetName} (${i + 1} of ${selectedSheets.length})...`);
-
+            
+            let startRow = 3;
+            const pageSize = 5000;
             const rows = [];
-            if (Array.isArray(data.headers) && data.headers.length > 0) {
-                data.headers.forEach(headerRow => {
-                    rows.push(headerRow.map(cell => cell == null ? '' : cell));
-                });
-            }
-            if (Array.isArray(data.data) && data.data.length > 0) {
-                data.data.forEach(row => {
-                    rows.push(row.map(cell => cell == null ? '' : cell));
-                });
+            let hasMore = true;
+            let totalRows = 0;
+            
+            while (hasMore) {
+                const res = await fetch(`${WEB_APP_URL}?action=getSheetData&sheetName=${encodeURIComponent(sheetName)}&startRow=${startRow}&numRows=${pageSize}`);
+                const data = await res.json();
+                if (!data.success) {
+                    throw new Error(`Failed to load sheet: ${sheetName}`);
+                }
+                
+                totalRows = data.totalRows || 0;
+                
+                // Add headers only once
+                if (startRow === 3 && Array.isArray(data.headers) && data.headers.length > 0) {
+                    data.headers.forEach(headerRow => {
+                        rows.push(headerRow.map(cell => cell == null ? '' : cell));
+                    });
+                }
+                
+                if (Array.isArray(data.data) && data.data.length > 0) {
+                    data.data.forEach(row => {
+                        rows.push(row.map(cell => cell == null ? '' : cell));
+                    });
+                    startRow += data.data.length;
+                    
+                    // Show progress within sheet
+                    const currentProgress = totalRows > 0 ? Math.min(100, Math.round(((startRow - 3) / totalRows) * 100)) : 100;
+                    const overallPercent = totalRows > 0 ? Math.round(((i + (startRow - 3) / totalRows) / selectedSheets.length) * 100) : Math.round(((i + 1) / selectedSheets.length) * 100);
+                    updateGlobalLoaderProgress(
+                        overallPercent,
+                        `Downloading ${sheetName}: ${currentProgress}% (${startRow - 3} of ${totalRows} rows)...`
+                    );
+                } else {
+                    hasMore = false;
+                }
+                
+                if (startRow - 3 >= totalRows || !data.data || data.data.length === 0) {
+                    hasMore = false;
+                }
             }
 
             const safeName = sheetName.substring(0, 31);
