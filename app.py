@@ -1523,9 +1523,22 @@ def _fetch_and_store_google_sheet_to_sqlite():
         # Free the HTML string immediately
         del html, res
         gc.collect()
-                
+        
+        print(f"[CACHE SYNC] Detected {len(sheets)} sheets from bootstrapData: {sheets}", flush=True)
+        
+        # Always ensure both known years are included
+        known_sheets = {
+            "0": "AJ&MY&FK SALE-PURCHASE 2025-26",
+            "1563945167": "AJ&MY&FK SALE-PURCHASE 2026-27"
+        }
+        existing_gids = {s[0] for s in sheets}
+        for gid, title in known_sheets.items():
+            if gid not in existing_gids:
+                sheets.append((gid, title))
+                print(f"[CACHE SYNC] Added missing fallback sheet: {title} (GID {gid})", flush=True)
+        
         if not sheets:
-            sheets = [("0", "AJ&MY&FK SALE-PURCHASE 2025-26"), ("1563945167", "AJ&MY&FK SALE-PURCHASE 2026-27")]
+            sheets = list(known_sheets.items())
         
         # Use a temporary table in the main database
         conn = sqlite3.connect(_CACHE_DB_PATH)
